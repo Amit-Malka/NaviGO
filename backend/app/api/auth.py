@@ -41,7 +41,6 @@ async def google_auth(session_id: str):
     flow = _make_flow()
     auth_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
         state=session_id,
         prompt="consent",
     )

@@ -16,27 +16,37 @@ def _get_calendar_service(token: dict):
     return build("calendar", "v3", credentials=creds)
 
 
-@tool
+from pydantic import BaseModel, Field
+
+class CreateCalendarEventSchema(BaseModel):
+    destination: str = Field(description="Trip destination")
+    origin: str = Field(description="Origin city")
+    departure_date: str = Field(description="Departure date in YYYY-MM-DD format")
+    return_date: str = Field(description="Return date in YYYY-MM-DD format")
+    doc_url: str = Field(default="", description="URL of the trip's Google Doc (from create_trip_document)")
+    notes: str = Field(default="", description="Any extra notes for the event description")
+
+@tool(args_schema=CreateCalendarEventSchema)
 def create_calendar_event(
-    google_token_json: str,
     destination: str,
     origin: str,
     departure_date: str,
     return_date: str,
     doc_url: str = "",
     notes: str = "",
+    google_token_json: str = "",
 ) -> dict:
     """Create a Google Calendar event for the trip.
     Only call this after the Google Doc has been successfully created.
 
     Args:
-        google_token_json: JSON string of the user's Google OAuth token
         destination: Trip destination
         origin: Origin city
         departure_date: Departure date in YYYY-MM-DD format
         return_date: Return date in YYYY-MM-DD format
         doc_url: URL of the trip's Google Doc (from create_trip_document)
         notes: Any extra notes for the event description
+        google_token_json: Internally injected token (do not supply)
     Returns event URL on success.
     """
     try:

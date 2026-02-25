@@ -27,9 +27,19 @@ def _get_drive_service(token: dict):
     return build("drive", "v3", credentials=creds)
 
 
-@tool
+from pydantic import BaseModel, Field
+
+class CreateTripDocumentSchema(BaseModel):
+    destination: str = Field(description="Trip destination city/country")
+    origin: str = Field(description="Trip origin city/country")
+    departure_date: str = Field(description="Departure date string")
+    return_date: str = Field(description="Return date string")
+    adults: int = Field(description="Number of travelers")
+    flights: str = Field(description="JSON string of flight options from Amadeus")
+    preferences: str = Field(default="", description="User's travel preferences")
+
+@tool(args_schema=CreateTripDocumentSchema)
 def create_trip_document(
-    google_token_json: str,
     destination: str,
     origin: str,
     departure_date: str,
@@ -37,12 +47,12 @@ def create_trip_document(
     adults: int,
     flights: str,
     preferences: str = "",
+    google_token_json: str = "",
 ) -> dict:
     """Create a Google Docs trip itinerary document.
     Only call this after explicit user confirmation.
 
     Args:
-        google_token_json: JSON string of the user's Google OAuth token
         destination: Trip destination city/country
         origin: Trip origin city/country
         departure_date: Departure date string
@@ -50,6 +60,7 @@ def create_trip_document(
         adults: Number of travelers
         flights: JSON string of flight options from Amadeus
         preferences: User's travel preferences
+        google_token_json: Internally injected token (do not supply)
     Returns doc URL and ID on success.
     """
     try:

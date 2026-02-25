@@ -74,7 +74,7 @@ async def tool_node(state: AgentState) -> dict:
         else:
             try:
                 # Inject google_token if needed and available
-                if "google_token_json" in tool_fn.args_schema.model_fields:
+                if tool_name in ["create_trip_document", "create_calendar_event"]:
                     if state.get("google_token"):
                         tool_args["google_token_json"] = json.dumps(state["google_token"])
                     else:
@@ -93,8 +93,11 @@ async def tool_node(state: AgentState) -> dict:
                     result = tool_fn.invoke(tool_args)
 
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 result = {"error": f"Tool execution failed: {str(e)}"}
 
+        print(f"Tool {tool_name} returned: {result}")
         results.append({"tool": tool_name, **result})
         tool_messages.append(ToolMessage(
             content=json.dumps(result) if isinstance(result, dict) else str(result),
