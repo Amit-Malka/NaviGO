@@ -1,15 +1,25 @@
 """FastAPI SSE chat endpoint."""
 import json
 import uuid
-from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from app.agent.graph import create_graph_with_memory
-from app.config import settings
+from langchain_core.messages import HumanMessage, AIMessage
+from app.agent.graph import get_graph_with_memory
+from app.config import settings  # noqa: F401 — imported for side-effects (loads .env)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# Module-level graph — shared across requests, MemorySaver persists state
+# per thread_id. Created once on first request.
+_graph = None
+
+
+def _get_graph():
+    global _graph
+    if _graph is None:
+        _graph = get_graph_with_memory()
+    return _graph
 
 
 class ChatRequest(BaseModel):
@@ -22,8 +32,7 @@ class ChatRequest(BaseModel):
 async def chat_stream(req: ChatRequest, request: Request):
     """SSE streaming endpoint — streams agent tokens + tool events to the frontend."""
     session_id = req.session_id or str(uuid.uuid4())
-
-    graph, saver = await create_graph_with_memory(settings.memory_db_path)
+    graph = _get_graph()
 
     config = {
         "configurable": {"thread_id": session_id},
@@ -42,10 +51,11 @@ async def chat_stream(req: ChatRequest, request: Request):
     }
 
     async def event_generator():
+        # Track whether any tokens were streamed so we can send final_text fallback
+        streamed_text = []
+
         try:
-            # Stream the agent graph
             async for event in graph.astream_events(initial_state, config=config, version="v2"):
-                # Disconnect check
                 if await request.is_disconnected():
                     break
 
@@ -57,10 +67,30 @@ async def chat_stream(req: ChatRequest, request: Request):
                 if kind == "on_chat_model_stream":
                     chunk = data.get("chunk")
                     if chunk and hasattr(chunk, "content") and chunk.content:
+                        streamed_text.append(chunk.content)
                         yield {
                             "event": "token",
                             "data": json.dumps({"text": chunk.content}),
                         }
+
+                # ── Capture final AI message if not already streamed ───────
+                elif kind == "on_chain_end" and name == "agent":
+                    output = data.get("output", {})
+                    if isinstance(output, dict):
+                        messages = output.get("messages", [])
+                        if messages and not streamed_text:
+                            last = messages[-1]
+                            text = getattr(last, "content", "") or ""
+                            # Only send if it's a plain text reply (no tool calls)
+                            tool_calls = getattr(last, "tool_calls", [])
+                            if text and not tool_calls:
+                                streamed_text.append(text)
+                                # Send as individual tokens so the UI animates
+                                for word in text:
+                                    yield {
+                                        "event": "token",
+                                        "data": json.dumps({"text": word}),
+                                    }
 
                 # ── Tool start event ───────────────────────────────────────
                 elif kind == "on_tool_start":
@@ -86,17 +116,20 @@ async def chat_stream(req: ChatRequest, request: Request):
                         }),
                     }
 
-                # ── Self-correction started ────────────────────────────────
+                # ── Self-correction ────────────────────────────────────────
                 elif kind == "on_chain_start" and name == "self_correction":
                     yield {
                         "event": "self_correction",
                         "data": json.dumps({"message": "Detected an issue, trying a different approach..."}),
                     }
 
-            # ── Session ID for frontend to persist ────────────────────────
+            # Done — also send final_text so frontend has it as fallback
             yield {
                 "event": "done",
-                "data": json.dumps({"session_id": session_id}),
+                "data": json.dumps({
+                    "session_id": session_id,
+                    "final_text": "".join(streamed_text),
+                }),
             }
 
         except Exception as e:
@@ -104,8 +137,6 @@ async def chat_stream(req: ChatRequest, request: Request):
                 "event": "error",
                 "data": json.dumps({"message": str(e)}),
             }
-        finally:
-            await saver.conn.close() if hasattr(saver, "conn") else None
 
     return EventSourceResponse(event_generator())
 
@@ -113,7 +144,8 @@ async def chat_stream(req: ChatRequest, request: Request):
 @router.get("/session/{session_id}/history")
 async def get_history(session_id: str):
     """Retrieve chat history for a session (for memory display)."""
-    graph, saver = await create_graph_with_memory(settings.memory_db_path)
+    from fastapi import HTTPException
+    graph = _get_graph()
     config = {"configurable": {"thread_id": session_id}}
     try:
         state = await graph.aget_state(config)

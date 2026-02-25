@@ -1,6 +1,6 @@
 """LangGraph StateGraph — the full ReAct agent wiring."""
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from app.agent.state import AgentState
 from app.agent.nodes import (
     agent_node,
@@ -11,7 +11,7 @@ from app.agent.nodes import (
 )
 
 
-def build_graph(checkpointer=None) -> StateGraph:
+def build_graph(checkpointer=None):
     """Build and compile the NaviGO ReAct agent graph.
 
     Graph flow:
@@ -49,7 +49,11 @@ def build_graph(checkpointer=None) -> StateGraph:
     return builder.compile(checkpointer=checkpointer)
 
 
-async def create_graph_with_memory(db_path: str):
-    """Create the graph with SQLite-backed long-term memory."""
-    saver = AsyncSqliteSaver.from_conn_string(db_path)
-    return build_graph(checkpointer=saver), saver
+def get_graph_with_memory():
+    """Return a graph compiled with in-memory checkpointer (session-scoped).
+
+    We use MemorySaver for simplicity and reliability across langgraph versions.
+    For production persistence, swap to AsyncSqliteSaver with proper lifecycle management.
+    """
+    saver = MemorySaver()
+    return build_graph(checkpointer=saver)

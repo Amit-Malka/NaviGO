@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import './App.css';
-import { Message } from './types';
+import type { Message } from './types';
 import { useAgent } from './hooks/useAgent';
 import { MessageBubble } from './components/Chat/MessageBubble';
 import { ChatInput } from './components/Chat/ChatInput';
@@ -15,13 +15,15 @@ const WELCOME: Message = {
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([WELCOME]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  // Pre-generate a session ID so Google Connect is available immediately
+  const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { sendMessage, setGoogleToken } = useAgent({
     onMessageUpdate: setMessages,
     onSessionId: setSessionId,
+    initialSessionId: sessionId,
   });
 
   // Scroll to bottom on new messages
@@ -101,11 +103,9 @@ export default function App() {
               Online · ReAct Mode
             </span>
           </div>
-          {sessionId && (
-            <span className="chat-header__session" title={sessionId}>
-              Session active
-            </span>
-          )}
+          <span className="chat-header__session" title={sessionId}>
+            Session active
+          </span>
         </header>
 
         <div className="chat-messages" role="log" aria-live="polite">
