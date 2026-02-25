@@ -53,6 +53,11 @@ async def google_callback(code: str, state: str):
     """Handle OAuth callback — exchange code for token, then close the popup via postMessage."""
     from fastapi.responses import HTMLResponse
     import json as _json
+    import os, traceback
+
+    # google-auth-oauthlib raises ScopeChanged when Google returns a superset
+    # of the requested scopes (e.g. drive instead of drive.file). Relax this.
+    os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
     flow = _make_flow()
     try:
@@ -66,8 +71,6 @@ async def google_callback(code: str, state: str):
         }
         _token_store[state] = token_data
 
-        # Return a tiny page that posts the token back to the opener and closes itself.
-        # This avoids loading the full React app inside the popup.
         payload = _json.dumps({"type": "navigo-auth-success", "token": token_data})
         html = f"""<!DOCTYPE html><html><body><script>
   try {{
@@ -78,12 +81,14 @@ async def google_callback(code: str, state: str):
         return HTMLResponse(content=html)
 
     except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[OAuth callback error]\n{tb}")
         error_html = f"""<!DOCTYPE html><html><body><script>
   try {{
     window.opener.postMessage({{type:'navigo-auth-error', message:{_json.dumps(str(e))}}}, '*');
   }} catch(e) {{}}
   window.close();
-</script><p>Authentication failed: {e}. You can close this window.</p></body></html>"""
+</script><p>Authentication failed: {e}</p><pre style="font-size:11px">{tb}</pre></body></html>"""
         return HTMLResponse(content=error_html, status_code=400)
 
 
