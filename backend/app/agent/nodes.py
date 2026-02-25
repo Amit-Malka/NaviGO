@@ -1,0 +1,170 @@
+"""LangGraph ReAct agent nodes."""
+import json
+from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
+from langchain_groq import ChatGroq
+from app.config import settings
+from app.agent.state import AgentState
+from app.agent.prompts import REACT_SYSTEM_PROMPT
+from app.tools.amadeus_flights import search_flights, search_airport_by_city
+from app.tools.adsbdb import search_aircraft_by_callsign, search_aircraft_by_registration
+from app.tools.google_docs import create_trip_document
+from app.tools.google_calendar import create_calendar_event
+
+# ── LLM Setup ────────────────────────────────────────────────────────────────
+
+def get_llm():
+    return ChatGroq(
+        model=settings.groq_model,
+        api_key=settings.groq_api_key,
+        temperature=0.3,  # lower for more deterministic planning
+        streaming=True,
+    )
+
+
+ALL_TOOLS = [
+    search_flights,
+    search_airport_by_city,
+    search_aircraft_by_callsign,
+    search_aircraft_by_registration,
+    create_trip_document,
+    create_calendar_event,
+]
+
+MAX_RETRIES = 2
+
+# ── Node: Agent (Reasoning + Planning) ───────────────────────────────────────
+
+async def agent_node(state: AgentState) -> dict:
+    """Main ReAct reasoning node. The LLM thinks, plans, and decides tool calls."""
+    llm = get_llm()
+    llm_with_tools = llm.bind_tools(ALL_TOOLS)
+
+    messages = [SystemMessage(content=REACT_SYSTEM_PROMPT)] + state["messages"]
+
+    # Inject user memory context if available
+    if state.get("trip_info"):
+        context = f"\n\n[Current trip info extracted so far: {json.dumps(state['trip_info'])}]"
+        messages[0] = SystemMessage(content=REACT_SYSTEM_PROMPT + context)
+
+    response = await llm_with_tools.ainvoke(messages)
+    return {"messages": [response]}
+
+
+# ── Node: Tool Executor ───────────────────────────────────────────────────────
+
+async def tool_node(state: AgentState) -> dict:
+    """Execute all tool calls from the last AI message."""
+    last_message = state["messages"][-1]
+
+    if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
+        return {}
+
+    tool_map = {t.name: t for t in ALL_TOOLS}
+    results = []
+    tool_messages = []
+
+    for tool_call in last_message.tool_calls:
+        tool_name = tool_call["name"]
+        tool_args = tool_call["args"]
+        tool_id = tool_call["id"]
+
+        tool_fn = tool_map.get(tool_name)
+        if not tool_fn:
+            result = {"error": f"Unknown tool: {tool_name}"}
+        else:
+            try:
+                # Inject google_token if needed and available
+                if "google_token_json" in tool_fn.args_schema.model_fields:
+                    if state.get("google_token"):
+                        tool_args["google_token_json"] = json.dumps(state["google_token"])
+                    else:
+                        result = {"error": "Google authentication required. Please grant permissions first."}
+                        results.append({"tool": tool_name, **result})
+                        tool_messages.append(ToolMessage(
+                            content=json.dumps(result),
+                            tool_call_id=tool_id,
+                        ))
+                        continue
+
+                # Execute the tool
+                if hasattr(tool_fn, "ainvoke"):
+                    result = await tool_fn.ainvoke(tool_args)
+                else:
+                    result = tool_fn.invoke(tool_args)
+
+            except Exception as e:
+                result = {"error": f"Tool execution failed: {str(e)}"}
+
+        results.append({"tool": tool_name, **result})
+        tool_messages.append(ToolMessage(
+            content=json.dumps(result) if isinstance(result, dict) else str(result),
+            tool_call_id=tool_id,
+        ))
+
+    return {
+        "messages": tool_messages,
+        "tool_results": results,
+    }
+
+
+# ── Node: Self-Correction ─────────────────────────────────────────────────────
+
+async def self_correction_node(state: AgentState) -> dict:
+    """Analyzes tool errors and generates a corrected approach."""
+    llm = get_llm()
+    retry_count = state.get("retry_count", 0)
+    tool_results = state.get("tool_results", [])
+
+    errors = [r for r in tool_results if "error" in r]
+    if not errors:
+        return {}
+
+    error_summary = "\n".join([
+        f"- Tool '{e['tool']}' failed: {e['error']}" for e in errors
+    ])
+    correction_hints = "\n".join([
+        f"  Hint: {e['correction_hint']}" for e in errors if "correction_hint" in e
+    ])
+
+    correction_prompt = (
+        f"The following tool calls failed:\n{error_summary}\n"
+        f"{correction_hints}\n\n"
+        f"This is retry attempt {retry_count + 1} of {MAX_RETRIES}.\n"
+        f"Please analyze what went wrong, correct your approach, and try again. "
+        f"State your correction reasoning clearly before retrying."
+    )
+
+    messages = [SystemMessage(content=REACT_SYSTEM_PROMPT)] + state["messages"] + [
+        HumanMessage(content=correction_prompt)
+    ]
+
+    llm_with_tools = llm.bind_tools(ALL_TOOLS)
+    response = await llm_with_tools.ainvoke(messages)
+
+    return {
+        "messages": [response],
+        "retry_count": retry_count + 1,
+    }
+
+
+# ── Routing Functions ────────────────────────────────────────────────────────
+
+def should_use_tools(state: AgentState) -> str:
+    """Route: does the agent want to call tools?"""
+    last_message = state["messages"][-1]
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return "tools"
+    return "end"
+
+
+def should_correct(state: AgentState) -> str:
+    """Route: did tools fail and do we have retries left?"""
+    tool_results = state.get("tool_results", [])
+    retry_count = state.get("retry_count", 0)
+
+    has_errors = any("error" in r for r in tool_results)
+    can_retry = retry_count < MAX_RETRIES
+
+    if has_errors and can_retry:
+        return "self_correction"
+    return "agent"  # proceed to next agent turn regardless
