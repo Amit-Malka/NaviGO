@@ -5,7 +5,14 @@ __pycache__/
 .venv/
 *.egg-info/
 .pytest_cache/
-navigo_memory.db
+navigo.db
+navigo.db-shm
+navigo.db-wal
+*.db
+*.db-shm
+*.db-wal
+test_out.txt
+test_output.txt
 
 # Node
 node_modules/
