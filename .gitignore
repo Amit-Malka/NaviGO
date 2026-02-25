@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+.pytest_cache/
+navigo_memory.db
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Environment
+.env
+*.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Google OAuth tokens
+*_token.json
+credentials.json

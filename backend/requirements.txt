@@ -1,0 +1,31 @@
+# Core
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+python-dotenv==1.0.1
+pydantic-settings==2.8.0
+pydantic==2.10.6
+
+# LangGraph + LangChain
+langgraph==0.3.5
+langchain==0.3.19
+langchain-groq==0.2.4
+langchain-core==0.3.40
+
+# Google Workspace
+google-auth==2.38.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+google-api-python-client==2.161.0
+
+# Amadeus
+amadeus==9.0.0
+
+# HTTP & utilities
+httpx==0.28.1
+sse-starlette==2.2.1
+python-multipart==0.0.20
+aiosqlite==0.21.0
+
+# Dev
+pytest==8.3.4
+pytest-asyncio==0.25.3
