@@ -17,8 +17,49 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([WELCOME]);
   // Pre-generate a session ID so Google Connect is available immediately
   const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
+  const [sessions, setSessions] = useState<{id: string, title: string, updated_at: string}[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Load past sessions
+  useEffect(() => {
+    const fetchSessions = async () => {
+      try {
+        const res = await fetch('http://localhost:8001/api/chat/sessions');
+        if (res.ok) {
+          const data = await res.json();
+          setSessions(data.sessions || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch sessions:', err);
+      }
+    };
+    fetchSessions();
+  }, [messages]); // Re-fetch when messages update to catch new titles
+
+  const loadSession = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`http://localhost:8001/api/chat/session/${id}/history`);
+      if (res.ok) {
+        const data = await res.json();
+        const loadedMessages = data.history.map((msg: any) => ({
+          id: crypto.randomUUID(),
+          role: msg.role,
+          content: msg.content,
+          timestamp: new Date() // Ideally use actual timestamp from DB, but this works for now
+        }));
+        setSessionId(id);
+        setMessages(loadedMessages.length ? loadedMessages : [WELCOME]);
+      }
+    } catch (err) {
+      console.error('Failed to load session history:', err);
+    }
+  }, []);
+
+  const handleNewChat = useCallback(() => {
+    setSessionId(crypto.randomUUID());
+    setMessages([WELCOME]);
+  }, []);
 
   const { sendMessage, setGoogleToken } = useAgent({
     onMessageUpdate: setMessages,
@@ -68,6 +109,32 @@ export default function App() {
           <p className="sidebar__hint">
             Grant access to let NaviGO create your trip doc and calendar event.
           </p>
+        </div>
+
+        <div className="sidebar__section sidebar__history">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <p className="sidebar__label" style={{ margin: 0 }}>Recent Trips</p>
+            <button 
+              onClick={handleNewChat} 
+              style={{ background: 'none', border: 'none', color: 'var(--color-primary)', cursor: 'pointer', fontSize: '1.2rem' }}
+              title="New Chat"
+            >
+              +
+            </button>
+          </div>
+          <ul className="sidebar__cap-list" style={{ maxHeight: '150px', overflowY: 'auto' }}>
+            {sessions.map(s => (
+              <li 
+                key={s.id} 
+                className="sidebar__cap-item" 
+                style={{ cursor: 'pointer', background: s.id === sessionId ? 'rgba(74, 144, 226, 0.1)' : 'transparent', padding: '6px', borderRadius: '4px' }}
+                onClick={() => loadSession(s.id)}
+              >
+                <span>💬</span> {s.title || 'Untitled Trip'}
+              </li>
+            ))}
+            {sessions.length === 0 && <li className="sidebar__cap-item" style={{ opacity: 0.5 }}>No recent trips</li>}
+          </ul>
         </div>
 
         <div className="sidebar__section sidebar__capabilities">

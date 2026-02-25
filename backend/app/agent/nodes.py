@@ -2,7 +2,10 @@
 import json
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_groq import ChatGroq
+from pydantic import BaseModel
+import aiosqlite
 from app.config import settings
+from app.db import DB_PATH
 from app.agent.state import AgentState
 from app.agent.prompts import REACT_SYSTEM_PROMPT
 from app.tools.amadeus_flights import search_flights, search_airport_by_city
@@ -41,9 +44,25 @@ async def agent_node(state: AgentState) -> dict:
 
     messages = [SystemMessage(content=REACT_SYSTEM_PROMPT)] + state["messages"]
 
-    # Inject user memory context if available
+    # Inject context
+    preferences = []
+    try:
+        session_id = state.get("session_id", "default")
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("SELECT preferences_json FROM user_preferences WHERE user_id = ?", (session_id,))
+            row = await cursor.fetchone()
+            if row:
+                preferences = json.loads(row[0])
+    except Exception as e:
+        print(f"Error fetching preferences: {e}")
+
+    context = ""
     if state.get("trip_info"):
-        context = f"\n\n[Current trip info extracted so far: {json.dumps(state['trip_info'])}]"
+        context += f"\n\n[Current trip info extracted so far: {json.dumps(state['trip_info'])}]"
+    if preferences:
+        context += f"\n\n[User's Past Preferences: {json.dumps(preferences)}]"
+
+    if context:
         messages[0] = SystemMessage(content=REACT_SYSTEM_PROMPT + context)
 
     response = await llm_with_tools.ainvoke(messages)
@@ -148,6 +167,59 @@ async def self_correction_node(state: AgentState) -> dict:
         "messages": [response],
         "retry_count": retry_count + 1,
     }
+
+# ── Node: Extraction ────────────────────────────────────────────────────────
+
+class ExtractionResult(BaseModel):
+    preferences: list[str]
+    title: str
+
+async def extract_preferences_node(state: AgentState) -> dict:
+    """Extract user preferences and thread title from the conversation and save to DB."""
+    session_id = state.get("session_id", "default")
+    messages = state.get("messages", [])
+    if len(messages) < 2:
+        return {}
+    
+    # We only want to extract from the recent conversation to save tokens.
+    llm = get_llm().with_structured_output(ExtractionResult)
+    prompt = (
+        "Analyze the following conversation and extract any long-term travel preferences the user has mentioned "
+        "(e.g., 'I always prefer aisle seats', 'I only fly Delta airlines'). "
+        "Also, provide a short 3-5 word title for the conversation.\n\n"
+        f"Conversation:\n" + "\n".join([f"{getattr(msg, 'type', type(msg).__name__)}: {msg.content}" for msg in messages[-5:]])
+    )
+    
+    try:
+        result = await llm.ainvoke(prompt)
+        prefs = result.preferences
+        title = result.title
+        
+        async with aiosqlite.connect(DB_PATH) as db:
+            if prefs:
+                cursor = await db.execute("SELECT preferences_json FROM user_preferences WHERE user_id = ?", (session_id,))
+                row = await cursor.fetchone()
+                existing_prefs = json.loads(row[0]) if row else []
+                all_prefs = list(set(existing_prefs + prefs))
+                await db.execute(
+                    "INSERT INTO user_preferences (user_id, preferences_json) VALUES (?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET preferences_json = ?",
+                    (session_id, json.dumps(all_prefs), json.dumps(all_prefs))
+                )
+            if title:
+                await db.execute(
+                    "INSERT INTO chat_threads (thread_id, user_id, title) VALUES (?, ?, ?) "
+                    "ON CONFLICT(thread_id) DO UPDATE SET title = ?, updated_at = CURRENT_TIMESTAMP",
+                    (session_id, session_id, title, title)
+                )
+            await db.commit()
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Error extracting preferences: {e}")
+        
+    return {}
 
 
 # ── Routing Functions ────────────────────────────────────────────────────────

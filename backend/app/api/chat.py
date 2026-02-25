@@ -120,7 +120,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                 elif kind == "on_chain_start" and name == "self_correction":
                     yield {
                         "event": "self_correction",
-                        "data": json.dumps({"message": "Detected an issue, trying a different approach..."}),
+                        "data": json.dumps({"message": "Working on it.."}),
                     }
 
             # Done — also send final_text so frontend has it as fallback
@@ -140,6 +140,22 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     return EventSourceResponse(event_generator())
 
+
+@router.get("/sessions")
+async def get_sessions():
+    """Retrieve all chat sessions for the sidebar."""
+    from app.db import DB_PATH
+    import aiosqlite
+    from fastapi import HTTPException
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT thread_id, title, updated_at FROM chat_threads ORDER BY updated_at DESC")
+            rows = await cursor.fetchall()
+            sessions = [{"id": row["thread_id"], "title": row["title"], "updated_at": row["updated_at"]} for row in rows]
+            return {"sessions": sessions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/session/{session_id}/history")
 async def get_history(session_id: str):

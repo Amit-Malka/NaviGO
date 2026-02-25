@@ -1,14 +1,26 @@
-"""FastAPI application entrypoint."""
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.chat import router as chat_router
 from app.api.auth import router as auth_router
 from app.config import settings
+from app.db import init_db
+from app.agent.graph import init_checkpointer, close_checkpointer
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await init_db()
+    await init_checkpointer()
+    yield
+    # Shutdown
+    await close_checkpointer()
 
 app = FastAPI(
     title="NaviGO API",
     description="AI Travel Agent powered by LangGraph + Groq Llama 4 Maverick",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS — allow frontend dev server
