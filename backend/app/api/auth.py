@@ -50,7 +50,10 @@ async def google_auth(session_id: str):
 
 @router.get("/callback")
 async def google_callback(code: str, state: str):
-    """Handle OAuth callback — exchange code for token and redirect to frontend."""
+    """Handle OAuth callback — exchange code for token, then close the popup via postMessage."""
+    from fastapi.responses import HTMLResponse
+    import json as _json
+
     flow = _make_flow()
     try:
         flow.fetch_token(code=code)
@@ -61,17 +64,27 @@ async def google_callback(code: str, state: str):
             "client_id": settings.google_client_id,
             "client_secret": settings.google_client_secret,
         }
-        # Store token keyed by session_id (the OAuth state param)
         _token_store[state] = token_data
 
-        # Redirect back to frontend with success
-        return RedirectResponse(
-            url=f"{settings.frontend_url}?auth=success&session_id={state}"
-        )
+        # Return a tiny page that posts the token back to the opener and closes itself.
+        # This avoids loading the full React app inside the popup.
+        payload = _json.dumps({"type": "navigo-auth-success", "token": token_data})
+        html = f"""<!DOCTYPE html><html><body><script>
+  try {{
+    window.opener.postMessage({payload}, '*');
+  }} catch(e) {{}}
+  window.close();
+</script><p>Authentication successful. You can close this window.</p></body></html>"""
+        return HTMLResponse(content=html)
+
     except Exception as e:
-        return RedirectResponse(
-            url=f"{settings.frontend_url}?auth=error&message={str(e)}"
-        )
+        error_html = f"""<!DOCTYPE html><html><body><script>
+  try {{
+    window.opener.postMessage({{type:'navigo-auth-error', message:{_json.dumps(str(e))}}}, '*');
+  }} catch(e) {{}}
+  window.close();
+</script><p>Authentication failed: {e}. You can close this window.</p></body></html>"""
+        return HTMLResponse(content=error_html, status_code=400)
 
 
 @router.get("/token/{session_id}")

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import './GoogleAuthButton.css';
 
 interface Props {
@@ -11,7 +11,26 @@ const API_BASE = 'http://localhost:8001';
 export function GoogleAuthButton({ sessionId, onTokenReceived }: Props) {
     const [status, setStatus] = useState<'idle' | 'pending' | 'success'>('idle');
 
-    const handleAuth = async () => {
+    // Listen for postMessage from the OAuth popup
+    useEffect(() => {
+        function handleMessage(event: MessageEvent) {
+            const data = event.data;
+            if (!data || typeof data !== 'object') return;
+
+            if (data.type === 'navigo-auth-success') {
+                onTokenReceived(data.token);
+                setStatus('success');
+            } else if (data.type === 'navigo-auth-error') {
+                console.error('Google auth error:', data.message);
+                setStatus('idle');
+            }
+        }
+
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+    }, [onTokenReceived]);
+
+    const handleAuth = useCallback(async () => {
         if (!sessionId) return;
         setStatus('pending');
 
@@ -19,30 +38,25 @@ export function GoogleAuthButton({ sessionId, onTokenReceived }: Props) {
             const res = await fetch(`${API_BASE}/api/auth/google?session_id=${sessionId}`);
             const { auth_url } = await res.json();
 
-            // Open OAuth popup
-            const popup = window.open(auth_url, 'Google Auth', 'width=500,height=600');
+            // Open Google consent in a popup — the callback page will postMessage back
+            const popup = window.open(
+                auth_url,
+                'Google Auth',
+                'width=520,height=640,scrollbars=yes,resizable=yes'
+            );
 
-            // Poll for token once popup closes or redirects
-            const interval = setInterval(async () => {
-                try {
-                    const tokenRes = await fetch(`${API_BASE}/api/auth/token/${sessionId}`);
-                    if (tokenRes.ok) {
-                        const { token } = await tokenRes.json();
-                        clearInterval(interval);
-                        popup?.close();
-                        onTokenReceived(token);
-                        setStatus('success');
-                    }
-                } catch { /* Still waiting */ }
-            }, 1000);
-
-            // Stop polling after 2 minutes
-            setTimeout(() => { clearInterval(interval); setStatus('idle'); }, 120000);
+            // Fallback: if popup is closed without posting (user dismissed), reset
+            const pollClosed = setInterval(() => {
+                if (popup?.closed) {
+                    clearInterval(pollClosed);
+                    setStatus(s => s === 'pending' ? 'idle' : s);
+                }
+            }, 500);
 
         } catch {
             setStatus('idle');
         }
-    };
+    }, [sessionId]);
 
     if (status === 'success') {
         return (
