@@ -1,5 +1,4 @@
-import React from 'react';
-import { Message, ToolActivity } from '../../types';
+import type { Message, ToolActivity } from '../../types';
 import './MessageBubble.css';
 
 interface Props { message: Message }

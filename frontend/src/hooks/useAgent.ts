@@ -1,17 +1,23 @@
 import { useCallback, useRef } from 'react';
-import { Message, ToolActivity, TokenEvent, ToolStartEvent, ToolEndEvent, SelfCorrectionEvent, DoneEvent } from '../types';
+import type { Message, ToolActivity, TokenEvent, ToolStartEvent, ToolEndEvent, SelfCorrectionEvent, DoneEvent } from '../types';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = 'http://localhost:8001';
 
 interface UseAgentOptions {
     onMessageUpdate: (updater: (msgs: Message[]) => Message[]) => void;
     onSessionId: (id: string) => void;
+    initialSessionId?: string;
 }
 
-export function useAgent({ onMessageUpdate, onSessionId }: UseAgentOptions) {
-    const sessionIdRef = useRef<string | null>(null);
+export function useAgent({ onMessageUpdate, onSessionId, initialSessionId }: UseAgentOptions) {
+    const sessionIdRef = useRef<string>(initialSessionId ?? crypto.randomUUID());
     const googleTokenRef = useRef<Record<string, string> | null>(null);
     const abortRef = useRef<AbortController | null>(null);
+
+    // Keep sessionIdRef in sync if initialSessionId changes (first render)
+    if (initialSessionId && sessionIdRef.current !== initialSessionId) {
+        sessionIdRef.current = initialSessionId;
+    }
 
     const setGoogleToken = useCallback((token: Record<string, string>) => {
         googleTokenRef.current = token;
@@ -91,7 +97,7 @@ export function useAgent({ onMessageUpdate, onSessionId }: UseAgentOptions) {
                 );
             }
         }
-    }, [onMessageUpdate]);
+    }, [onMessageUpdate]);  // eslint-disable-line react-hooks/exhaustive-deps
 
     function handleSseEvent(type: string, payload: unknown, msgId: string) {
         switch (type) {
@@ -141,12 +147,18 @@ export function useAgent({ onMessageUpdate, onSessionId }: UseAgentOptions) {
                 break;
             }
             case 'done': {
-                const { session_id } = payload as DoneEvent;
+                const { session_id, final_text } = payload as DoneEvent & { final_text?: string };
                 sessionIdRef.current = session_id;
                 onSessionId(session_id);
                 onMessageUpdate(msgs =>
                     msgs.map(m => m.id === msgId
-                        ? { ...m, isStreaming: false, isSelfCorrecting: false }
+                        ? {
+                            ...m,
+                            // If no tokens were streamed (ainvoke path), use final_text
+                            content: m.content || final_text || '(No response)',
+                            isStreaming: false,
+                            isSelfCorrecting: false,
+                        }
                         : m
                     )
                 );
