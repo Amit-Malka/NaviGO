@@ -1,9 +1,17 @@
-# NaviGO - Agentic AI Travel Assistant
+# NaviGO - Agentic AI Travel Assistant ✈️
 
 NaviGO is a full-stack AI travel agent.
 It uses a LangGraph-based reasoning loop, executes real external tools, retries on failures, and persists user preferences across sessions.
 
-## Requirements Coverage
+## Tech Stack
+
+- `Frontend`: React + Vite + TypeScript
+- `Backend`: FastAPI + LangGraph + LangChain
+- `LLM`: Groq (`qwen/qwen3-32b` by default)
+- `Data`: SQLite (`aiosqlite`) for checkpoints, chat threads, and user preferences
+- `Integrations`: Amadeus, ADSBDB, Google Docs API, Google Calendar API, Google Places API, Google Weather API
+
+## Requirements Coverage ✅
 
 ### Core Requirements
 
@@ -20,7 +28,7 @@ It uses a LangGraph-based reasoning loop, executes real external tools, retries 
 | Long-term memory across sessions | Implemented | SQLite checkpointer (`AsyncSqliteSaver`) + preference tables in `backend/app/db.py`; retrieval/injection in `backend/app/agent/nodes.py`. |
 | Modern UI ("vibe-coded") | Implemented | React + Vite app with themed interface, streaming chat, tool activity badges, and session history in `frontend/src/App.tsx` + CSS. |
 
-## System Architecture
+## System Architecture 🏗️
 
 ```
 Frontend (React + Vite)
@@ -36,7 +44,7 @@ Backend (FastAPI)
   -> SQLite (chat threads, preference facts, LangGraph checkpoints)
 ```
 
-## Agent Flow
+## Agent Flow 🔄
 
 1. User message enters `agent_node` (reasoning + tool selection).
 2. If tool calls are present, `tool_node` executes them and appends tool outputs.
@@ -44,7 +52,7 @@ Backend (FastAPI)
 4. If no more tool work is needed, `extract_preferences_node` stores long-term preferences and a thread title.
 5. Response streams to the UI token-by-token via SSE, including tool start/end and correction events.
 
-## Tools
+## Tools 🛠️
 
 - `search_flights` (Amadeus): real flight offers with structured options.
 - `search_airport_by_city` (Amadeus): resolves city names to IATA codes (used for correction).
@@ -65,7 +73,7 @@ Backend (FastAPI)
 - On failure, the agent receives an explicit correction prompt with error summary and optional correction hints.
 - Example implemented path: invalid IATA code from Amadeus -> use airport lookup tool -> retry flight search.
 
-## Memory Design
+## Memory Design 🧠
 
 - Conversation state is persisted through LangGraph checkpoints keyed by `thread_id`.
 - Cross-session preference memory is stored per `user_id` in:
@@ -74,7 +82,7 @@ Backend (FastAPI)
   - `chat_threads`
 - Extracted/inferred preferences are re-injected into system context for future turns.
 
-## Local Setup
+## Local Setup ⚙️
 
 ### Backend
 
@@ -97,7 +105,7 @@ npm run dev
 
 Open `http://localhost:5173`.
 
-## Environment Variables (Backend)
+## Environment Variables (Backend) 🔐
 
 Required:
 - `GROQ_API_KEY`
@@ -111,23 +119,6 @@ Optional:
 - `GROQ_MODEL` (default in code: `qwen/qwen3-32b`)
 - `GOOGLE_PLACES_API_KEY` (destination highlights/weather in Docs generation)
 
-## Validation Run (Current Repo State)
+---
 
-- Backend tests: `6 passed` (`.venv\Scripts\python.exe -m pytest tests -q` from `backend/`)
-- Frontend build: successful (`npm run -s build` from `frontend/`)
-
-## Demo Video Checklist
-
-Use this order to satisfy the deliverable clearly:
-
-1. Ask for a multi-step trip task (origin, destination, dates, preferences).
-2. Show the agent plan and tool calls in-stream.
-3. Trigger a correction case (city instead of IATA, then corrected retry).
-4. Confirm and create Google Doc itinerary.
-5. Confirm and create Google Calendar event.
-6. Start a new session and show memory-based preference recall.
-
-## Notes
-
-- OAuth tokens are kept in in-memory stores in `auth.py` (acceptable for demo, not production).
-- Session identity uses JWT cookies for anonymous and Google-authenticated users.
+Built with ❤️ by Amit Malka
