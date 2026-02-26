@@ -3,6 +3,11 @@
 NaviGO is a full-stack AI travel agent.
 It uses a LangGraph-based reasoning loop, executes real external tools, retries on failures, and persists user preferences across sessions.
 
+---
+<img width="2752" height="1536" alt="unnamed" src="https://github.com/user-attachments/assets/81fa7caa-4930-4b7b-82a4-56db0063d52c" />
+
+---
+
 ## Tech Stack
 
 - `Frontend`: React + Vite + TypeScript
