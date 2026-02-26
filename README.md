@@ -119,6 +119,11 @@ Optional:
 - `GROQ_MODEL` (default in code: `qwen/qwen3-32b`)
 - `GOOGLE_PLACES_API_KEY` (destination highlights/weather in Docs generation)
 
+## Notes
+
+- OAuth tokens are kept in in-memory stores in `auth.py` (acceptable for demo, not production).
+- Session identity uses JWT cookies for anonymous and Google-authenticated users.
+  
 ---
 
 Built with ❤️ by Amit Malka
