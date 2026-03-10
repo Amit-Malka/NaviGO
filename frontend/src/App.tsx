@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 import type { Message } from './types';
 import { useAgent } from './hooks/useAgent';
@@ -6,81 +6,125 @@ import { MessageBubble } from './components/Chat/MessageBubble';
 import { ChatInput } from './components/Chat/ChatInput';
 import { GoogleAuthButton } from './components/Auth/GoogleAuthButton';
 
+const API = 'http://localhost:8001';
+
 const WELCOME: Message = {
   id: 'welcome',
   role: 'assistant',
-  content: "✈️ **Welcome to NaviGO!** I'm your AI travel companion powered by Llama 4.\n\nTell me about your dream trip and I'll search real flights, enrich them with live aircraft data, and—with your permission—create a Google Docs itinerary and add it to your calendar.\n\n*Where would you like to go?*",
+  content: "✈️ **Welcome to NaviGO!** I'm your AI travel companion powered by qwen3-32b.\n\nTell me about your dream trip and I'll search real flights, enrich them with live aircraft data, and—with your permission—create a Google Docs itinerary and add it to your calendar.\n\n*Where would you like to go?*",
   timestamp: new Date(),
 };
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([WELCOME]);
-  // Pre-generate a session ID so Google Connect is available immediately
   const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
-  const [sessions, setSessions] = useState<{id: string, title: string, updated_at: string}[]>([]);
+  const [sessions, setSessions] = useState<{ id: string, title: string, updated_at: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [googleToken, setGoogleToken] = useState<Record<string, string> | null>(null);
+  // Theme: 'dark' (default) or 'light'
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Load past sessions
+  // Apply theme to document root
   useEffect(() => {
-    const fetchSessions = async () => {
-      try {
-        const res = await fetch('http://localhost:8001/api/chat/sessions');
-        if (res.ok) {
-          const data = await res.json();
-          setSessions(data.sessions || []);
-        }
-      } catch (err) {
-        console.error('Failed to fetch sessions:', err);
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme(t => t === 'dark' ? 'light' : 'dark');
+  }, []);
+
+  // Load past sessions
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/chat/sessions`);
+      if (res.ok) {
+        const data = await res.json();
+        setSessions(data.sessions || []);
       }
-    };
+    } catch (err) {
+      console.error('Failed to fetch sessions:', err);
+    }
+  }, []);
+
+  useEffect(() => {
     fetchSessions();
-  }, [messages]); // Re-fetch when messages update to catch new titles
+  }, [messages, fetchSessions]);
 
   const loadSession = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`http://localhost:8001/api/chat/session/${id}/history`);
+      const res = await fetch(`${API}/api/chat/session/${id}/history`);
       if (res.ok) {
         const data = await res.json();
-        const loadedMessages = data.history.map((msg: any) => ({
+        const loaded = data.history.map((msg: any) => ({
           id: crypto.randomUUID(),
           role: msg.role,
           content: msg.content,
-          timestamp: new Date() // Ideally use actual timestamp from DB, but this works for now
+          timestamp: new Date(),
         }));
         setSessionId(id);
-        setMessages(loadedMessages.length ? loadedMessages : [WELCOME]);
+        setMessages(loaded.length ? loaded : [WELCOME]);
       }
     } catch (err) {
       console.error('Failed to load session history:', err);
     }
   }, []);
 
+  const deleteSession = useCallback(async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation(); // Don't trigger loadSession
+    try {
+      await fetch(`${API}/api/chat/session/${id}`, { method: 'DELETE' });
+      setSessions(prev => prev.filter(s => s.id !== id));
+      // If we deleted the active session, start a new one
+      if (id === sessionId) {
+        setSessionId(crypto.randomUUID());
+        setMessages([WELCOME]);
+      }
+    } catch (err) {
+      console.error('Failed to delete session:', err);
+    }
+  }, [sessionId]);
+
   const handleNewChat = useCallback(() => {
     setSessionId(crypto.randomUUID());
     setMessages([WELCOME]);
   }, []);
 
-  const { sendMessage, setGoogleToken } = useAgent({
+  const { sendMessage, stopGeneration } = useAgent({
     onMessageUpdate: setMessages,
     onSessionId: setSessionId,
     initialSessionId: sessionId,
+    googleToken,
   });
 
-  // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const handleSend = useCallback(async (text: string) => {
     setIsLoading(true);
+    setIsStreaming(true);
     await sendMessage(text);
     setIsLoading(false);
+    setIsStreaming(false);
   }, [sendMessage]);
+
+  // Last assistant message text — drives dynamic suggestion chips
+  const lastAssistantMessage = useMemo(() => {
+    const assistantMsgs = messages.filter(m => m.role === 'assistant');
+    return assistantMsgs.at(-1)?.content ?? '';
+  }, [messages]);
+
+  const handleStop = useCallback(() => {
+    stopGeneration();
+    setIsLoading(false);
+    setIsStreaming(false);
+  }, [stopGeneration]);
 
   const handleTokenReceived = useCallback((token: Record<string, string>) => {
     setGoogleToken(token);
-  }, [setGoogleToken]);
+  }, []);
 
   return (
     <div className="app-layout">
@@ -96,7 +140,7 @@ export default function App() {
           <p className="sidebar__label">Powered by</p>
           <div className="sidebar__model-chip">
             <span className="sidebar__model-dot" />
-            Llama 4 Maverick · Groq
+            qwen3-32b 70B · Groq
           </div>
         </div>
 
@@ -114,23 +158,51 @@ export default function App() {
         <div className="sidebar__section sidebar__history">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <p className="sidebar__label" style={{ margin: 0 }}>Recent Trips</p>
-            <button 
-              onClick={handleNewChat} 
-              style={{ background: 'none', border: 'none', color: 'var(--color-primary)', cursor: 'pointer', fontSize: '1.2rem' }}
+            <button
+              onClick={handleNewChat}
+              style={{ background: 'none', border: 'none', color: 'var(--accent-teal)', cursor: 'pointer', fontSize: '1.3rem', lineHeight: 1 }}
               title="New Chat"
             >
               +
             </button>
           </div>
-          <ul className="sidebar__cap-list" style={{ maxHeight: '150px', overflowY: 'auto' }}>
+          <ul className="sidebar__cap-list" style={{ maxHeight: '180px', overflowY: 'auto' }}>
             {sessions.map(s => (
-              <li 
-                key={s.id} 
-                className="sidebar__cap-item" 
-                style={{ cursor: 'pointer', background: s.id === sessionId ? 'rgba(74, 144, 226, 0.1)' : 'transparent', padding: '6px', borderRadius: '4px' }}
+              <li
+                key={s.id}
+                className="sidebar__cap-item"
+                style={{
+                  cursor: 'pointer',
+                  background: s.id === sessionId ? 'rgba(0,212,170,0.08)' : 'transparent',
+                  padding: '6px 4px',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '6px',
+                }}
                 onClick={() => loadSession(s.id)}
               >
-                <span>💬</span> {s.title || 'Untitled Trip'}
+                <span style={{ display: 'flex', gap: '6px', alignItems: 'center', overflow: 'hidden' }}>
+                  <span>💬</span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {s.title || 'Untitled Trip'}
+                  </span>
+                </span>
+                <button
+                  onClick={(e) => deleteSession(e, s.id)}
+                  title="Delete session"
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: 'var(--text-muted)', fontSize: '14px', flexShrink: 0,
+                    padding: '2px 4px', borderRadius: '4px', lineHeight: 1,
+                    opacity: 0.6, transition: 'opacity 0.2s, color 0.2s',
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; (e.currentTarget as HTMLElement).style.color = 'var(--error, #ef4444)'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '0.6'; (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; }}
+                >
+                  ✕
+                </button>
               </li>
             ))}
             {sessions.length === 0 && <li className="sidebar__cap-item" style={{ opacity: 0.5 }}>No recent trips</li>}
@@ -170,9 +242,24 @@ export default function App() {
               Online · ReAct Mode
             </span>
           </div>
-          <span className="chat-header__session" title={sessionId}>
-            Session active
-          </span>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            {/* Theme toggle */}
+            <button
+              onClick={toggleTheme}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              style={{
+                background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+                borderRadius: '8px', padding: '6px 10px', cursor: 'pointer',
+                color: 'var(--text-secondary)', fontSize: '16px', lineHeight: 1,
+                transition: 'background 0.2s',
+              }}
+            >
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
+            <span className="chat-header__session" title={sessionId}>
+              Session active
+            </span>
+          </div>
         </header>
 
         <div className="chat-messages" role="log" aria-live="polite">
@@ -182,7 +269,13 @@ export default function App() {
           <div ref={messagesEndRef} />
         </div>
 
-        <ChatInput onSend={handleSend} disabled={isLoading} />
+        <ChatInput
+          onSend={handleSend}
+          onStop={handleStop}
+          disabled={isLoading}
+          isStreaming={isStreaming}
+          lastAssistantMessage={lastAssistantMessage}
+        />
       </main>
     </div>
   );

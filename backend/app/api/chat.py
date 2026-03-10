@@ -14,6 +14,15 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 # per thread_id. Created once on first request.
 _graph = None
 
+# Server-side token store: session_id → google_token dict.
+# This bypasses LangGraph's config pipeline which strips unknown configurable keys.
+# Updated on every request so it's always current.
+_google_token_store: dict[str, dict] = {}
+
+def get_google_token_for_session(session_id: str) -> dict | None:
+    """Called by tool_node to retrieve the google_token for the current session."""
+    return _google_token_store.get(session_id)
+
 
 def _get_graph():
     global _graph
@@ -34,10 +43,27 @@ async def chat_stream(req: ChatRequest, request: Request):
     session_id = req.session_id or str(uuid.uuid4())
     graph = _get_graph()
 
+    # Store google_token server-side keyed by session_id.
+    # LangGraph's AsyncSqliteSaver strips non-checkpoint keys from configurable,
+    # so we cannot rely on passing it through config["configurable"].
+    effective_google_token = req.google_token
+    if not effective_google_token:
+        # Fallback to token captured by OAuth callback (popup flow).
+        from app.api.auth import get_token_for_session
+        effective_google_token = get_token_for_session(session_id)
+    if effective_google_token:
+        _google_token_store[session_id] = effective_google_token
+
     config = {
-        "configurable": {"thread_id": session_id},
+        "configurable": {
+            "thread_id": session_id,
+        },
         "recursion_limit": 20,
     }
+    # DEBUG — remove once token flow is confirmed working
+    has_token = bool(effective_google_token and effective_google_token.get("access_token"))
+    stored = bool(_google_token_store.get(session_id))
+    print(f"[DEBUG chat.py] session={session_id[:8]} token_in_request={has_token} token_in_store={stored}")
 
     initial_state = {
         "messages": [HumanMessage(content=req.message)],
@@ -45,7 +71,7 @@ async def chat_stream(req: ChatRequest, request: Request):
         "tool_results": [],
         "plan_steps": [],
         "retry_count": 0,
-        "google_token": req.google_token,
+        "google_token": effective_google_token,
         "session_id": session_id,
         "user_confirmed_creation": False,
     }
@@ -133,9 +159,12 @@ async def chat_stream(req: ChatRequest, request: Request):
             }
 
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print("STREAM ERROR:", tb)
             yield {
                 "event": "error",
-                "data": json.dumps({"message": str(e)}),
+                "data": json.dumps({"message": f"{str(e)}\n{tb}"}),
             }
 
     return EventSourceResponse(event_generator())
@@ -175,3 +204,27 @@ async def get_history(session_id: str):
         return {"session_id": session_id, "history": history}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a chat session and its checkpointed state from all tables."""
+    from app.db import DB_PATH
+    import aiosqlite
+    from fastapi import HTTPException
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            # Remove from our app tables
+            await db.execute("DELETE FROM chat_threads WHERE thread_id = ?", (session_id,))
+            await db.execute("DELETE FROM user_preferences WHERE user_id = ?", (session_id,))
+            # Remove LangGraph checkpoint data
+            # Actual table names used by AsyncSqliteSaver: checkpoints + writes
+            await db.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+            await db.execute("DELETE FROM writes WHERE thread_id = ?", (session_id,))
+            await db.commit()
+        # Also clear from in-memory token store
+        _google_token_store.pop(session_id, None)
+        return {"status": "deleted", "session_id": session_id}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

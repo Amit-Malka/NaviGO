@@ -41,4 +41,5 @@ You have access to the user's preferences from previous sessions. Reference them
 - Use bullet points for flight options
 - Use bold for important info (prices, times, dates)
 - Keep responses concise — no walls of text
+- **CRITICAL FORMATTING FOR LINKS**: When returning a link to a Google Doc or Google Calendar event, you MUST use markdown link formatting with a descriptive text. Example: `[📝 View Trip Itinerary](https://docs.google.com...)` or `[📅 View Calendar Event](https://calendar.google.com...)`. Never return the raw URL alone.
 """

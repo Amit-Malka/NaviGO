@@ -4,6 +4,7 @@ from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, Human
 from langchain_groq import ChatGroq
 from pydantic import BaseModel
 import aiosqlite
+from langchain_core.runnables.config import RunnableConfig
 from app.config import settings
 from app.db import DB_PATH
 from app.agent.state import AgentState
@@ -15,14 +16,38 @@ from app.tools.google_calendar import create_calendar_event
 
 # ── LLM Setup ────────────────────────────────────────────────────────────────
 
-def get_llm():
+def _make_llm(api_key: str) -> ChatGroq:
     return ChatGroq(
         model=settings.groq_model,
-        api_key=settings.groq_api_key,
-        temperature=0.3,  # lower for more deterministic planning
+        api_key=api_key,
+        temperature=0.3,
         streaming=True,
     )
 
+def get_llm() -> ChatGroq:
+    """Return LLM using primary key (used by extract_preferences_node which has its own retry)."""
+    return _make_llm(settings.groq_api_key)
+
+async def invoke_with_fallback(llm_with_tools, messages: list) -> any:
+    """Call the LLM; if key 1 hits a rate-limit or function-call error, retry with key 2.
+
+    This doubles the effective tokens-per-minute budget without any user-visible delay.
+    """
+    try:
+        return await llm_with_tools.ainvoke(messages)
+    except Exception as e:
+        err_str = str(e).lower()
+        is_rate_limit = "rate_limit" in err_str or "429" in err_str
+        is_fn_error = "failed to call a function" in err_str or "400" in err_str
+
+        if (is_rate_limit or is_fn_error) and settings.groq_api_key_2:
+            print(f"[LLM Fallback] Key 1 failed ({type(e).__name__}), retrying with key 2...")
+            # Rebuild the chain with the second key
+            llm2 = _make_llm(settings.groq_api_key_2)
+            # Re-apply the same tools + tool_choice that were bound to the original chain
+            bound = llm2.bind_tools(ALL_TOOLS, tool_choice="auto")
+            return await bound.ainvoke(messages)
+        raise  # No fallback available or different error — propagate
 
 ALL_TOOLS = [
     search_flights,
@@ -40,9 +65,15 @@ MAX_RETRIES = 2
 async def agent_node(state: AgentState) -> dict:
     """Main ReAct reasoning node. The LLM thinks, plans, and decides tool calls."""
     llm = get_llm()
-    llm_with_tools = llm.bind_tools(ALL_TOOLS)
+    # tool_choice="auto" is required for qwen/qwen3-32b to reliably
+    # format function calls. Without it, Groq can return a 'Failed to call a function' error.
+    llm_with_tools = llm.bind_tools(ALL_TOOLS, tool_choice="auto")
 
-    messages = [SystemMessage(content=REACT_SYSTEM_PROMPT)] + state["messages"]
+    # Truncate history to the last 12 messages to prevent context bloat.
+    # Long histories with many tool results push tokens over Groq's rate limit
+    # and cause malformed function call generation.
+    recent_messages = state["messages"][-12:]
+    messages = [SystemMessage(content=REACT_SYSTEM_PROMPT)] + recent_messages
 
     # Inject context
     preferences = []
@@ -65,18 +96,27 @@ async def agent_node(state: AgentState) -> dict:
     if context:
         messages[0] = SystemMessage(content=REACT_SYSTEM_PROMPT + context)
 
-    response = await llm_with_tools.ainvoke(messages)
+    response = await invoke_with_fallback(llm_with_tools, messages)
     return {"messages": [response]}
 
 
 # ── Node: Tool Executor ───────────────────────────────────────────────────────
 
-async def tool_node(state: AgentState) -> dict:
+async def tool_node(state: AgentState, config: RunnableConfig) -> dict:
     """Execute all tool calls from the last AI message."""
     last_message = state["messages"][-1]
 
     if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
         return {}
+
+    # Get google_token from the server-side store (keyed by session_id).
+    # We cannot use config["configurable"]["google_token"] because LangGraph's
+    # AsyncSqliteSaver strips non-checkpoint keys from configurable internally.
+    from app.api.chat import get_google_token_for_session
+    session_id = state.get("session_id", "")
+    google_token = get_google_token_for_session(session_id)
+    # DEBUG — remove once confirmed working
+    print(f"[DEBUG tool_node] session={session_id[:8] if session_id else '?'} google_token_present={bool(google_token)}")
 
     tool_map = {t.name: t for t in ALL_TOOLS}
     results = []
@@ -84,7 +124,7 @@ async def tool_node(state: AgentState) -> dict:
 
     for tool_call in last_message.tool_calls:
         tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
+        tool_args = dict(tool_call["args"])  # Copy to avoid mutating AIMessage history
         tool_id = tool_call["id"]
 
         tool_fn = tool_map.get(tool_name)
@@ -92,24 +132,12 @@ async def tool_node(state: AgentState) -> dict:
             result = {"error": f"Unknown tool: {tool_name}"}
         else:
             try:
-                # Inject google_token if needed and available
-                if tool_name in ["create_trip_document", "create_calendar_event"]:
-                    if state.get("google_token"):
-                        tool_args["google_token_json"] = json.dumps(state["google_token"])
-                    else:
-                        result = {"error": "Google authentication required. Please grant permissions first."}
-                        results.append({"tool": tool_name, **result})
-                        tool_messages.append(ToolMessage(
-                            content=json.dumps(result),
-                            tool_call_id=tool_id,
-                        ))
-                        continue
-
-                # Execute the tool
+                # Pass google_token via configurable so InjectedToolArg picks it up
+                run_config = {"configurable": {"google_token": google_token}}
                 if hasattr(tool_fn, "ainvoke"):
-                    result = await tool_fn.ainvoke(tool_args)
+                    result = await tool_fn.ainvoke(tool_args, config=run_config)
                 else:
-                    result = tool_fn.invoke(tool_args)
+                    result = tool_fn.invoke(tool_args, config=run_config)
 
             except Exception as e:
                 import traceback
@@ -133,6 +161,8 @@ async def tool_node(state: AgentState) -> dict:
 
 async def self_correction_node(state: AgentState) -> dict:
     """Analyzes tool errors and generates a corrected approach."""
+    # Use a lightweight LLM call (no tool binding) just to craft a correction message.
+    # The corrected message goes back to agent_node which will re-bind tools properly.
     llm = get_llm()
     retry_count = state.get("retry_count", 0)
     tool_results = state.get("tool_results", [])
@@ -160,8 +190,9 @@ async def self_correction_node(state: AgentState) -> dict:
         HumanMessage(content=correction_prompt)
     ]
 
-    llm_with_tools = llm.bind_tools(ALL_TOOLS)
-    response = await llm_with_tools.ainvoke(messages)
+    # Bind tools so the corrected response can issue new tool calls
+    llm_with_tools = llm.bind_tools(ALL_TOOLS, tool_choice="auto")
+    response = await invoke_with_fallback(llm_with_tools, messages)
 
     return {
         "messages": [response],
@@ -181,7 +212,8 @@ async def extract_preferences_node(state: AgentState) -> dict:
     if len(messages) < 2:
         return {}
     
-    # We only want to extract from the recent conversation to save tokens.
+    # No tool binding here — this node only does structured output extraction.
+    # Binding tools wastes ~1,500 tokens against the rate limit for no benefit.
     llm = get_llm().with_structured_output(ExtractionResult)
     prompt = (
         "Analyze the following conversation and extract any long-term travel preferences the user has mentioned "

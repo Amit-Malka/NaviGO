@@ -1,7 +1,5 @@
 """Google OAuth2 endpoints."""
-import json
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter
 from google_auth_oauthlib.flow import Flow
 from app.config import settings
 
@@ -17,6 +15,11 @@ SCOPES = [
 
 # In-memory token store (production would use Redis/DB)
 _token_store: dict[str, dict] = {}
+
+
+def get_token_for_session(session_id: str) -> dict | None:
+    """Return token for a session if present."""
+    return _token_store.get(session_id)
 
 
 def _make_flow() -> Flow:
@@ -62,11 +65,15 @@ async def google_callback(code: str, state: str):
     try:
         flow.fetch_token(code=code)
         credentials = flow.credentials
+        previous_token = _token_store.get(state, {})
         token_data = {
             "access_token": credentials.token,
-            "refresh_token": credentials.refresh_token,
+            "refresh_token": credentials.refresh_token or previous_token.get("refresh_token"),
             "client_id": settings.google_client_id,
             "client_secret": settings.google_client_secret,
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "scopes": credentials.scopes or SCOPES,
+            "expiry": credentials.expiry.isoformat() if credentials.expiry else None,
         }
         _token_store[state] = token_data
 
@@ -93,10 +100,14 @@ async def google_callback(code: str, state: str):
 
 @router.get("/token/{session_id}")
 async def get_token(session_id: str):
-    """Frontend polls this to retrieve the stored token after OAuth callback."""
+    """Frontend polls this to retrieve the stored token after OAuth callback.
+
+    Returns a pending response instead of 404 while waiting for callback,
+    so frontend polling doesn't spam browser network errors.
+    """
     token = _token_store.get(session_id)
     if not token:
-        raise HTTPException(status_code=404, detail="Token not found or expired")
+        return {"status": "pending", "token": None}
     return {"token": token}
 
 

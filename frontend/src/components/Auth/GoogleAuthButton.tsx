@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import './GoogleAuthButton.css';
 
 interface Props {
@@ -10,6 +10,7 @@ const API_BASE = 'http://localhost:8001';
 
 export function GoogleAuthButton({ sessionId, onTokenReceived }: Props) {
     const [status, setStatus] = useState<'idle' | 'pending' | 'success'>('idle');
+    const authSucceededRef = useRef(false);
 
     // Listen for postMessage from the OAuth popup
     useEffect(() => {
@@ -18,6 +19,7 @@ export function GoogleAuthButton({ sessionId, onTokenReceived }: Props) {
             if (!data || typeof data !== 'object') return;
 
             if (data.type === 'navigo-auth-success') {
+                authSucceededRef.current = true;
                 onTokenReceived(data.token);
                 setStatus('success');
             } else if (data.type === 'navigo-auth-error') {
@@ -32,6 +34,7 @@ export function GoogleAuthButton({ sessionId, onTokenReceived }: Props) {
 
     const handleAuth = useCallback(async () => {
         if (!sessionId) return;
+        authSucceededRef.current = false;
         setStatus('pending');
 
         try {
@@ -44,19 +47,50 @@ export function GoogleAuthButton({ sessionId, onTokenReceived }: Props) {
                 'Google Auth',
                 'width=520,height=640,scrollbars=yes,resizable=yes'
             );
+            if (!popup) {
+                setStatus('idle');
+                return;
+            }
 
-            // Fallback: if popup is closed without posting (user dismissed), reset
-            const pollClosed = setInterval(() => {
-                if (popup?.closed) {
-                    clearInterval(pollClosed);
-                    setStatus(s => s === 'pending' ? 'idle' : s);
+            let finished = false;
+            const finish = (nextStatus: 'idle' | 'success') => {
+                if (finished) return;
+                finished = true;
+                if (nextStatus === 'success') authSucceededRef.current = true;
+                clearInterval(pollTokenInterval);
+                clearTimeout(timeout);
+                setStatus(nextStatus);
+            };
+
+            // Fallback 1: poll backend token endpoint in case postMessage is missed.
+            const pollToken = async () => {
+                if (finished) return;
+                try {
+                    const tokenRes = await fetch(`${API_BASE}/api/auth/token/${sessionId}`);
+                    if (tokenRes.ok) {
+                        const data = await tokenRes.json();
+                        if (data?.token?.access_token) {
+                            onTokenReceived(data.token);
+                            finish('success');
+                        }
+                    }
+                } catch {
+                    // Keep polling until timeout/close.
                 }
-            }, 500);
+            };
+            const pollTokenInterval = setInterval(() => {
+                void pollToken();
+            }, 1000);
+
+            // Stop polling after 2 minutes.
+            const timeout = setTimeout(() => {
+                if (!finished) finish('idle');
+            }, 120000);
 
         } catch {
             setStatus('idle');
         }
-    }, [sessionId]);
+    }, [sessionId, onTokenReceived]);
 
     if (status === 'success') {
         return (

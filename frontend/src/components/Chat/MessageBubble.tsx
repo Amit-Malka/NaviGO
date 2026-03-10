@@ -72,6 +72,10 @@ function renderMarkdown(text: string): string {
         .replace(/\*(.+?)\*/g, '<em>$1</em>')
         .replace(/_(.+?)_/g, '<em>$1</em>')
         .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_match, linkText, url) => {
+            const isActionLink = url.includes('docs.google.com') || url.includes('calendar.google.com');
+            const className = isActionLink ? 'action-btn' : '';
+            return `<a href="${url}" target="_blank" rel="noreferrer" class="${className}">${linkText}</a>`;
+        })
         .replace(/\n/g, '<br/>');
 }

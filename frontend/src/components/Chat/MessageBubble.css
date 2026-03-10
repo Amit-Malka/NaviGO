@@ -151,3 +151,31 @@
         transform: rotate(360deg);
     }
 }
+
+/* ── Action Buttons (Docs/Calendar) ──────────────────────────────────────── */
+.action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    margin: 8px 0;
+    background: linear-gradient(135deg, var(--accent-teal), #00b4d8);
+    color: #fff !important;
+    border-radius: 8px;
+    font-weight: 600;
+    text-decoration: none !important;
+    box-shadow: 0 4px 12px rgba(0, 180, 216, 0.25);
+    transition: all 0.2s ease;
+}
+
+.action-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 180, 216, 0.4);
+    color: #fff !important;
+}
+
+.action-btn::after {
+    content: "↗";
+    font-size: 14px;
+    font-weight: bold;
+}

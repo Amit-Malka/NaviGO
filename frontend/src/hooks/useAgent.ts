@@ -7,21 +7,21 @@ interface UseAgentOptions {
     onMessageUpdate: (updater: (msgs: Message[]) => Message[]) => void;
     onSessionId: (id: string) => void;
     initialSessionId?: string;
+    googleToken?: Record<string, string> | null;
 }
 
-export function useAgent({ onMessageUpdate, onSessionId, initialSessionId }: UseAgentOptions) {
+export function useAgent({ onMessageUpdate, onSessionId, initialSessionId, googleToken }: UseAgentOptions) {
     const sessionIdRef = useRef<string>(initialSessionId ?? crypto.randomUUID());
-    const googleTokenRef = useRef<Record<string, string> | null>(null);
+    // Sync googleToken prop into a ref on every render so sendMessage always has
+    // the latest value — avoids stale closure issues when App re-renders.
+    const googleTokenRef = useRef<Record<string, string> | null | undefined>(googleToken);
+    googleTokenRef.current = googleToken;
     const abortRef = useRef<AbortController | null>(null);
 
     // Keep sessionIdRef in sync if initialSessionId changes (first render)
     if (initialSessionId && sessionIdRef.current !== initialSessionId) {
         sessionIdRef.current = initialSessionId;
     }
-
-    const setGoogleToken = useCallback((token: Record<string, string>) => {
-        googleTokenRef.current = token;
-    }, []);
 
     const sendMessage = useCallback(async (userText: string) => {
         // Abort any active stream
@@ -176,5 +176,9 @@ export function useAgent({ onMessageUpdate, onSessionId, initialSessionId }: Use
         }
     }
 
-    return { sendMessage, setGoogleToken };
+    const stopGeneration = useCallback(() => {
+        abortRef.current?.abort();
+    }, []);
+
+    return { sendMessage, stopGeneration };
 }
