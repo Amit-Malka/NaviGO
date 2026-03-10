@@ -1,5 +1,6 @@
 """LangGraph ReAct agent nodes."""
 import json
+import re
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_groq import ChatGroq
 from pydantic import BaseModel
@@ -60,6 +61,124 @@ ALL_TOOLS = [
 
 MAX_RETRIES = 2
 
+def _build_preference_fact(
+    key: str,
+    value: str,
+    source: str,
+    confidence: float,
+    evidence: str,
+) -> dict:
+    return {
+        "pref_key": key,
+        "pref_value": value,
+        "source": source,
+        "confidence": confidence,
+        "evidence": evidence[:240],
+    }
+
+
+def _infer_preference_facts_from_text(text: str, source: str = "inferred") -> list[dict]:
+    lowered = text.lower()
+    facts: list[dict] = []
+
+    if re.search(r"\b(cheapest|lowest price|lowest fare|budget option|most affordable)\b", lowered):
+        facts.append(_build_preference_fact(
+            "price_priority",
+            "cheapest",
+            source,
+            0.85 if source == "explicit" else 0.75,
+            text,
+        ))
+    if re.search(r"\b(shortest|fastest|quickest|least time)\b", lowered):
+        facts.append(_build_preference_fact(
+            "time_priority",
+            "shortest_duration",
+            source,
+            0.85 if source == "explicit" else 0.75,
+            text,
+        ))
+    if re.search(r"\b(direct only|nonstop|non-stop|no stops)\b", lowered):
+        facts.append(_build_preference_fact(
+            "stops_priority",
+            "direct_only",
+            source,
+            0.85 if source == "explicit" else 0.75,
+            text,
+        ))
+    if re.search(r"\b(window seat|aisle seat|middle seat)\b", lowered):
+        seat = "window" if "window" in lowered else ("aisle" if "aisle" in lowered else "middle")
+        facts.append(_build_preference_fact(
+            "seat_preference",
+            seat,
+            source,
+            0.85 if source == "explicit" else 0.75,
+            text,
+        ))
+
+    return facts
+
+
+async def _load_preference_context(user_id: str) -> tuple[list[str], list[dict]]:
+    legacy_preferences: list[str] = []
+    preference_facts: list[dict] = []
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT preferences_json FROM user_preferences WHERE user_id = ?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row and row[0]:
+            raw_preferences = json.loads(row[0])
+            legacy_preferences = [p for p in raw_preferences if isinstance(p, str) and p.strip()]
+
+        cursor = await db.execute(
+            """
+            SELECT pref_key, pref_value, source, confidence, evidence, updated_at
+            FROM user_preference_facts
+            WHERE user_id = ?
+            ORDER BY datetime(updated_at) DESC, confidence DESC
+            LIMIT 5
+            """,
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        for pref_key, pref_value, source, confidence, evidence, updated_at in rows:
+            preference_facts.append({
+                "pref_key": pref_key,
+                "pref_value": pref_value,
+                "source": source,
+                "confidence": confidence,
+                "evidence": evidence,
+                "updated_at": updated_at,
+            })
+
+    return legacy_preferences, preference_facts
+
+
+async def _upsert_preference_facts(db, user_id: str, facts: list[dict]) -> None:
+    for fact in facts:
+        await db.execute(
+            """
+            INSERT INTO user_preference_facts (user_id, pref_key, pref_value, source, confidence, evidence)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, pref_key) DO UPDATE SET
+                pref_value = excluded.pref_value,
+                source = excluded.source,
+                confidence = excluded.confidence,
+                evidence = excluded.evidence,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                user_id,
+                fact["pref_key"],
+                fact["pref_value"],
+                fact["source"],
+                fact["confidence"],
+                fact["evidence"],
+            ),
+        )
+
 # ── Node: Agent (Reasoning + Planning) ───────────────────────────────────────
 
 async def agent_node(state: AgentState) -> dict:
@@ -76,22 +195,35 @@ async def agent_node(state: AgentState) -> dict:
     messages = [SystemMessage(content=REACT_SYSTEM_PROMPT)] + recent_messages
 
     # Inject context
-    preferences = []
+    user_id = state.get("user_id") or state.get("session_id", "default")
+    preferences: list[str] = []
+    preference_facts: list[dict] = []
     try:
-        session_id = state.get("session_id", "default")
-        async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute("SELECT preferences_json FROM user_preferences WHERE user_id = ?", (session_id,))
-            row = await cursor.fetchone()
-            if row:
-                preferences = json.loads(row[0])
+        preferences, preference_facts = await _load_preference_context(user_id)
     except Exception as e:
         print(f"Error fetching preferences: {e}")
 
     context = ""
     if state.get("trip_info"):
         context += f"\n\n[Current trip info extracted so far: {json.dumps(state['trip_info'])}]"
+    if preference_facts:
+        compact_facts = [
+            {
+                "key": f["pref_key"],
+                "value": f["pref_value"],
+                "source": f["source"],
+                "confidence": f["confidence"],
+            }
+            for f in preference_facts
+        ]
+        context += f"\n\n[Persistent user preference memory: {json.dumps(compact_facts)}]"
     if preferences:
-        context += f"\n\n[User's Past Preferences: {json.dumps(preferences)}]"
+        context += f"\n\n[Additional past preferences: {json.dumps(preferences)}]"
+    if any(
+        f["pref_key"] == "price_priority" and f["pref_value"] == "cheapest"
+        for f in preference_facts
+    ):
+        context += "\n\n[Behavior hint: prioritize lower-priced flight options first unless the user asks otherwise.]"
 
     if context:
         messages[0] = SystemMessage(content=REACT_SYSTEM_PROMPT + context)
@@ -208,6 +340,7 @@ class ExtractionResult(BaseModel):
 async def extract_preferences_node(state: AgentState) -> dict:
     """Extract user preferences and thread title from the conversation and save to DB."""
     session_id = state.get("session_id", "default")
+    user_id = state.get("user_id") or session_id
     messages = state.get("messages", [])
     if len(messages) < 2:
         return {}
@@ -224,25 +357,43 @@ async def extract_preferences_node(state: AgentState) -> dict:
     
     try:
         result = await llm.ainvoke(prompt)
-        prefs = result.preferences
-        title = result.title
+        prefs = [p.strip() for p in (result.preferences or []) if isinstance(p, str) and p.strip()]
+        title = result.title or ""
+
+        inferred_facts: list[dict] = []
+        for pref in prefs:
+            inferred_facts.extend(_infer_preference_facts_from_text(pref, source="explicit"))
+
+        for msg in messages[-8:]:
+            if isinstance(msg, HumanMessage) and getattr(msg, "content", None):
+                inferred_facts.extend(_infer_preference_facts_from_text(str(msg.content), source="inferred"))
+
+        facts_by_key: dict[str, dict] = {}
+        for fact in inferred_facts:
+            existing = facts_by_key.get(fact["pref_key"])
+            if not existing or fact["confidence"] >= existing["confidence"]:
+                facts_by_key[fact["pref_key"]] = fact
+        deduped_facts = list(facts_by_key.values())
         
         async with aiosqlite.connect(DB_PATH) as db:
             if prefs:
-                cursor = await db.execute("SELECT preferences_json FROM user_preferences WHERE user_id = ?", (session_id,))
+                cursor = await db.execute("SELECT preferences_json FROM user_preferences WHERE user_id = ?", (user_id,))
                 row = await cursor.fetchone()
-                existing_prefs = json.loads(row[0]) if row else []
-                all_prefs = list(set(existing_prefs + prefs))
+                raw_existing = json.loads(row[0]) if row else []
+                existing_prefs = [p for p in raw_existing if isinstance(p, str) and p.strip()]
+                all_prefs = sorted(set(existing_prefs + prefs))
                 await db.execute(
                     "INSERT INTO user_preferences (user_id, preferences_json) VALUES (?, ?) "
                     "ON CONFLICT(user_id) DO UPDATE SET preferences_json = ?",
-                    (session_id, json.dumps(all_prefs), json.dumps(all_prefs))
+                    (user_id, json.dumps(all_prefs), json.dumps(all_prefs))
                 )
+            if deduped_facts:
+                await _upsert_preference_facts(db, user_id, deduped_facts)
             if title:
                 await db.execute(
                     "INSERT INTO chat_threads (thread_id, user_id, title) VALUES (?, ?, ?) "
                     "ON CONFLICT(thread_id) DO UPDATE SET title = ?, updated_at = CURRENT_TIMESTAMP",
-                    (session_id, session_id, title, title)
+                    (session_id, user_id, title, title)
                 )
             await db.commit()
             

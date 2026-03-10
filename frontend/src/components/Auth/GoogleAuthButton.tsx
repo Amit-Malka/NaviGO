@@ -38,7 +38,9 @@ export function GoogleAuthButton({ sessionId, onTokenReceived }: Props) {
         setStatus('pending');
 
         try {
-            const res = await fetch(`${API_BASE}/api/auth/google?session_id=${sessionId}`);
+            const res = await fetch(`${API_BASE}/api/auth/google?session_id=${sessionId}`, {
+                credentials: 'include',
+            });
             const { auth_url } = await res.json();
 
             // Open Google consent in a popup — the callback page will postMessage back
@@ -66,7 +68,9 @@ export function GoogleAuthButton({ sessionId, onTokenReceived }: Props) {
             const pollToken = async () => {
                 if (finished) return;
                 try {
-                    const tokenRes = await fetch(`${API_BASE}/api/auth/token/${sessionId}`);
+                    const tokenRes = await fetch(`${API_BASE}/api/auth/token/${sessionId}`, {
+                        credentials: 'include',
+                    });
                     if (tokenRes.ok) {
                         const data = await tokenRes.json();
                         if (data?.token?.access_token) {

@@ -30,5 +30,7 @@ class AgentState(TypedDict):
     google_token: dict[str, Any] | None
     # Session ID (for memory checkpointing)
     session_id: str
+    # Stable user ID (for cross-session preference memory)
+    user_id: str
     # Whether the user has approved Docs + Calendar creation
     user_confirmed_creation: bool

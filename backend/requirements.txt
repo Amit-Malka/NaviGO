@@ -25,6 +25,7 @@ httpx==0.28.1
 sse-starlette==2.2.1
 python-multipart==0.0.20
 aiosqlite==0.21.0
+PyJWT==2.10.1
 
 # Dev
 pytest==8.3.4

@@ -1,23 +1,27 @@
 """FastAPI SSE chat endpoint."""
 import json
 import uuid
+
+import aiosqlite
 from fastapi import APIRouter, Request
-from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import JSONResponse
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
-from langchain_core.messages import HumanMessage, AIMessage
+from sse_starlette.sse import EventSourceResponse
+
 from app.agent.graph import get_graph_with_memory
-from app.config import settings  # noqa: F401 — imported for side-effects (loads .env)
+from app.db import DB_PATH
+from app.session_auth import resolve_or_create_user_session, set_session_cookie
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
-# Module-level graph — shared across requests, MemorySaver persists state
-# per thread_id. Created once on first request.
+# Module-level graph: shared across requests, MemorySaver persists state per thread_id.
 _graph = None
 
-# Server-side token store: session_id → google_token dict.
+# Server-side token store: session_id -> google_token dict.
 # This bypasses LangGraph's config pipeline which strips unknown configurable keys.
-# Updated on every request so it's always current.
 _google_token_store: dict[str, dict] = {}
+
 
 def get_google_token_for_session(session_id: str) -> dict | None:
     """Called by tool_node to retrieve the google_token for the current session."""
@@ -31,6 +35,34 @@ def _get_graph():
     return _graph
 
 
+async def _ensure_session_owner(session_id: str, user_id: str) -> str:
+    """Ensure thread ownership. If session belongs to another user, return a new session id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT user_id FROM chat_threads WHERE thread_id = ?", (session_id,))
+        row = await cursor.fetchone()
+
+        if row and row["user_id"] and row["user_id"] != user_id:
+            return str(uuid.uuid4())
+
+        await db.execute(
+            "INSERT OR IGNORE INTO chat_threads (thread_id, user_id, title) VALUES (?, ?, ?)",
+            (session_id, user_id, "Untitled Trip"),
+        )
+        await db.commit()
+    return session_id
+
+
+async def _user_owns_session(session_id: str, user_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT 1 FROM chat_threads WHERE thread_id = ? AND user_id = ? LIMIT 1",
+            (session_id, user_id),
+        )
+        return await cursor.fetchone() is not None
+
+
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
@@ -39,8 +71,10 @@ class ChatRequest(BaseModel):
 
 @router.post("/stream")
 async def chat_stream(req: ChatRequest, request: Request):
-    """SSE streaming endpoint — streams agent tokens + tool events to the frontend."""
-    session_id = req.session_id or str(uuid.uuid4())
+    """SSE streaming endpoint: streams agent tokens + tool events to frontend."""
+    user_id, issued_session_cookie = resolve_or_create_user_session(request)
+    requested_session_id = req.session_id or str(uuid.uuid4())
+    session_id = await _ensure_session_owner(requested_session_id, user_id)
     graph = _get_graph()
 
     # Store google_token server-side keyed by session_id.
@@ -48,9 +82,9 @@ async def chat_stream(req: ChatRequest, request: Request):
     # so we cannot rely on passing it through config["configurable"].
     effective_google_token = req.google_token
     if not effective_google_token:
-        # Fallback to token captured by OAuth callback (popup flow).
-        from app.api.auth import get_token_for_session
-        effective_google_token = get_token_for_session(session_id)
+        from app.api.auth import get_token_for_session, get_token_for_user
+
+        effective_google_token = get_token_for_session(session_id) or get_token_for_user(user_id)
     if effective_google_token:
         _google_token_store[session_id] = effective_google_token
 
@@ -60,7 +94,6 @@ async def chat_stream(req: ChatRequest, request: Request):
         },
         "recursion_limit": 20,
     }
-    # DEBUG — remove once token flow is confirmed working
     has_token = bool(effective_google_token and effective_google_token.get("access_token"))
     stored = bool(_google_token_store.get(session_id))
     print(f"[DEBUG chat.py] session={session_id[:8]} token_in_request={has_token} token_in_store={stored}")
@@ -73,13 +106,12 @@ async def chat_stream(req: ChatRequest, request: Request):
         "retry_count": 0,
         "google_token": effective_google_token,
         "session_id": session_id,
+        "user_id": user_id,
         "user_confirmed_creation": False,
     }
 
     async def event_generator():
-        # Track whether any tokens were streamed so we can send final_text fallback
         streamed_text = []
-
         try:
             async for event in graph.astream_events(initial_state, config=config, version="v2"):
                 if await request.is_disconnected():
@@ -89,7 +121,6 @@ async def chat_stream(req: ChatRequest, request: Request):
                 name = event.get("name", "")
                 data = event.get("data", {})
 
-                # ── Stream AI text tokens ──────────────────────────────────
                 if kind == "on_chat_model_stream":
                     chunk = data.get("chunk")
                     if chunk and hasattr(chunk, "content") and chunk.content:
@@ -98,8 +129,6 @@ async def chat_stream(req: ChatRequest, request: Request):
                             "event": "token",
                             "data": json.dumps({"text": chunk.content}),
                         }
-
-                # ── Capture final AI message if not already streamed ───────
                 elif kind == "on_chain_end" and name == "agent":
                     output = data.get("output", {})
                     if isinstance(output, dict):
@@ -107,59 +136,56 @@ async def chat_stream(req: ChatRequest, request: Request):
                         if messages and not streamed_text:
                             last = messages[-1]
                             text = getattr(last, "content", "") or ""
-                            # Only send if it's a plain text reply (no tool calls)
                             tool_calls = getattr(last, "tool_calls", [])
                             if text and not tool_calls:
                                 streamed_text.append(text)
-                                # Send as individual tokens so the UI animates
-                                for word in text:
+                                for char in text:
                                     yield {
                                         "event": "token",
-                                        "data": json.dumps({"text": word}),
+                                        "data": json.dumps({"text": char}),
                                     }
-
-                # ── Tool start event ───────────────────────────────────────
                 elif kind == "on_tool_start":
                     yield {
                         "event": "tool_start",
-                        "data": json.dumps({
-                            "tool": name,
-                            "input": data.get("input", {}),
-                        }),
+                        "data": json.dumps(
+                            {
+                                "tool": name,
+                                "input": data.get("input", {}),
+                            }
+                        ),
                     }
-
-                # ── Tool end event ─────────────────────────────────────────
                 elif kind == "on_tool_end":
                     output = data.get("output", {})
                     if hasattr(output, "content"):
                         output = output.content
                     yield {
                         "event": "tool_end",
-                        "data": json.dumps({
-                            "tool": name,
-                            "output": output,
-                            "success": "error" not in str(output).lower(),
-                        }),
+                        "data": json.dumps(
+                            {
+                                "tool": name,
+                                "output": output,
+                                "success": "error" not in str(output).lower(),
+                            }
+                        ),
                     }
-
-                # ── Self-correction ────────────────────────────────────────
                 elif kind == "on_chain_start" and name == "self_correction":
                     yield {
                         "event": "self_correction",
                         "data": json.dumps({"message": "Working on it.."}),
                     }
 
-            # Done — also send final_text so frontend has it as fallback
             yield {
                 "event": "done",
-                "data": json.dumps({
-                    "session_id": session_id,
-                    "final_text": "".join(streamed_text),
-                }),
+                "data": json.dumps(
+                    {
+                        "session_id": session_id,
+                        "final_text": "".join(streamed_text),
+                    }
+                ),
             }
-
         except Exception as e:
             import traceback
+
             tb = traceback.format_exc()
             print("STREAM ERROR:", tb)
             yield {
@@ -167,29 +193,47 @@ async def chat_stream(req: ChatRequest, request: Request):
                 "data": json.dumps({"message": f"{str(e)}\n{tb}"}),
             }
 
-    return EventSourceResponse(event_generator())
+    response = EventSourceResponse(event_generator())
+    if issued_session_cookie:
+        set_session_cookie(response, issued_session_cookie)
+    return response
 
 
 @router.get("/sessions")
-async def get_sessions():
-    """Retrieve all chat sessions for the sidebar."""
-    from app.db import DB_PATH
-    import aiosqlite
-    from fastapi import HTTPException
+async def get_sessions(request: Request):
+    """Retrieve all chat sessions for the current signed-in (or anonymous) user."""
+    user_id, issued_session_cookie = resolve_or_create_user_session(request)
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT thread_id, title, updated_at FROM chat_threads ORDER BY updated_at DESC")
+            cursor = await db.execute(
+                "SELECT thread_id, title, updated_at FROM chat_threads WHERE user_id = ? ORDER BY updated_at DESC",
+                (user_id,),
+            )
             rows = await cursor.fetchall()
-            sessions = [{"id": row["thread_id"], "title": row["title"], "updated_at": row["updated_at"]} for row in rows]
-            return {"sessions": sessions}
+            sessions = [
+                {"id": row["thread_id"], "title": row["title"], "updated_at": row["updated_at"]}
+                for row in rows
+            ]
+            response = JSONResponse(content={"sessions": sessions})
+            if issued_session_cookie:
+                set_session_cookie(response, issued_session_cookie)
+            return response
     except Exception as e:
+        from fastapi import HTTPException
+
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/session/{session_id}/history")
-async def get_history(session_id: str):
-    """Retrieve chat history for a session (for memory display)."""
+async def get_history(session_id: str, request: Request):
+    """Retrieve chat history for a user-owned session."""
     from fastapi import HTTPException
+
+    user_id, issued_session_cookie = resolve_or_create_user_session(request)
+    if not await _user_owns_session(session_id, user_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+
     graph = _get_graph()
     config = {"configurable": {"thread_id": session_id}}
     try:
@@ -201,30 +245,44 @@ async def get_history(session_id: str):
                 history.append({"role": "user", "content": msg.content})
             elif isinstance(msg, AIMessage):
                 history.append({"role": "assistant", "content": msg.content or ""})
-        return {"session_id": session_id, "history": history}
+        response = JSONResponse(content={"session_id": session_id, "history": history})
+        if issued_session_cookie:
+            set_session_cookie(response, issued_session_cookie)
+        return response
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.delete("/session/{session_id}")
-async def delete_session(session_id: str):
-    """Delete a chat session and its checkpointed state from all tables."""
-    from app.db import DB_PATH
-    import aiosqlite
+async def delete_session(session_id: str, request: Request):
+    """Delete a user-owned chat session and its checkpointed state."""
     from fastapi import HTTPException
+
+    user_id, issued_session_cookie = resolve_or_create_user_session(request)
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            # Remove from our app tables
-            await db.execute("DELETE FROM chat_threads WHERE thread_id = ?", (session_id,))
-            await db.execute("DELETE FROM user_preferences WHERE user_id = ?", (session_id,))
-            # Remove LangGraph checkpoint data
-            # Actual table names used by AsyncSqliteSaver: checkpoints + writes
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT 1 FROM chat_threads WHERE thread_id = ? AND user_id = ? LIMIT 1",
+                (session_id, user_id),
+            )
+            if await cursor.fetchone() is None:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            await db.execute("DELETE FROM chat_threads WHERE thread_id = ? AND user_id = ?", (session_id, user_id))
             await db.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
             await db.execute("DELETE FROM writes WHERE thread_id = ?", (session_id,))
             await db.commit()
-        # Also clear from in-memory token store
+
         _google_token_store.pop(session_id, None)
-        return {"status": "deleted", "session_id": session_id}
+        response = JSONResponse(content={"status": "deleted", "session_id": session_id})
+        if issued_session_cookie:
+            set_session_cookie(response, issued_session_cookie)
+        return response
+    except HTTPException:
+        raise
     except Exception as e:
-        import traceback; traceback.print_exc()
+        import traceback
+
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

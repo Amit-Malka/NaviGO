@@ -51,6 +51,7 @@ export function useAgent({ onMessageUpdate, onSessionId, initialSessionId, googl
             const res = await fetch(`${API_BASE}/api/chat/stream`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({
                     message: userText,
                     session_id: sessionIdRef.current,

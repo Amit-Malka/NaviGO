@@ -1,7 +1,9 @@
 """Google OAuth2 endpoints."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from google_auth_oauthlib.flow import Flow
+
 from app.config import settings
+from app.session_auth import create_session_token, get_user_id_from_request, set_session_cookie
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -13,13 +15,19 @@ SCOPES = [
     "email",
 ]
 
-# In-memory token store (production would use Redis/DB)
-_token_store: dict[str, dict] = {}
+# In-memory token stores (production should use Redis/DB).
+_token_store_by_session: dict[str, dict] = {}
+_token_store_by_user: dict[str, dict] = {}
 
 
 def get_token_for_session(session_id: str) -> dict | None:
     """Return token for a session if present."""
-    return _token_store.get(session_id)
+    return _token_store_by_session.get(session_id)
+
+
+def get_token_for_user(user_id: str) -> dict | None:
+    """Return token for a signed-in user if present."""
+    return _token_store_by_user.get(user_id)
 
 
 def _make_flow() -> Flow:
@@ -40,7 +48,7 @@ def _make_flow() -> Flow:
 
 @router.get("/google")
 async def google_auth(session_id: str):
-    """Redirect user to Google's OAuth consent screen."""
+    """Return Google OAuth consent URL."""
     flow = _make_flow()
     auth_url, _ = flow.authorization_url(
         access_type="offline",
@@ -52,10 +60,13 @@ async def google_auth(session_id: str):
 
 @router.get("/callback")
 async def google_callback(code: str, state: str):
-    """Handle OAuth callback — exchange code for token, then close the popup via postMessage."""
+    """Handle OAuth callback, persist token, and set JWT identity cookie."""
     from fastapi.responses import HTMLResponse
+    from google.auth.transport.requests import Request as GoogleRequest
+    from google.oauth2 import id_token as google_id_token
     import json as _json
-    import os, traceback
+    import os
+    import traceback
 
     # google-auth-oauthlib raises ScopeChanged when Google returns a superset
     # of the requested scopes (e.g. drive instead of drive.file). Relax this.
@@ -65,7 +76,7 @@ async def google_callback(code: str, state: str):
     try:
         flow.fetch_token(code=code)
         credentials = flow.credentials
-        previous_token = _token_store.get(state, {})
+        previous_token = _token_store_by_session.get(state, {})
         token_data = {
             "access_token": credentials.token,
             "refresh_token": credentials.refresh_token or previous_token.get("refresh_token"),
@@ -75,16 +86,40 @@ async def google_callback(code: str, state: str):
             "scopes": credentials.scopes or SCOPES,
             "expiry": credentials.expiry.isoformat() if credentials.expiry else None,
         }
-        _token_store[state] = token_data
+        _token_store_by_session[state] = token_data
 
-        payload = _json.dumps({"type": "navigo-auth-success", "token": token_data})
+        google_sub: str | None = None
+        email: str | None = None
+        try:
+            if credentials.id_token:
+                id_info = google_id_token.verify_oauth2_token(
+                    credentials.id_token,
+                    GoogleRequest(),
+                    settings.google_client_id,
+                )
+                google_sub = id_info.get("sub")
+                email = id_info.get("email")
+        except Exception as id_err:
+            print(f"[OAuth callback] id_token verification failed: {id_err}")
+
+        user_id: str | None = None
+        session_cookie: str | None = None
+        if google_sub:
+            user_id = f"google:{google_sub}"
+            _token_store_by_user[user_id] = token_data
+            session_cookie = create_session_token(user_id=user_id, provider="google", email=email)
+
+        payload = _json.dumps({"type": "navigo-auth-success", "token": token_data, "user_id": user_id})
         html = f"""<!DOCTYPE html><html><body><script>
   try {{
     window.opener.postMessage({payload}, '*');
   }} catch(e) {{}}
   window.close();
 </script><p>Authentication successful. You can close this window.</p></body></html>"""
-        return HTMLResponse(content=html)
+        response = HTMLResponse(content=html)
+        if session_cookie:
+            set_session_cookie(response, session_cookie)
+        return response
 
     except Exception as e:
         tb = traceback.format_exc()
@@ -100,12 +135,8 @@ async def google_callback(code: str, state: str):
 
 @router.get("/token/{session_id}")
 async def get_token(session_id: str):
-    """Frontend polls this to retrieve the stored token after OAuth callback.
-
-    Returns a pending response instead of 404 while waiting for callback,
-    so frontend polling doesn't spam browser network errors.
-    """
-    token = _token_store.get(session_id)
+    """Frontend polls this to retrieve the stored token after OAuth callback."""
+    token = _token_store_by_session.get(session_id)
     if not token:
         return {"status": "pending", "token": None}
     return {"token": token}
@@ -114,5 +145,13 @@ async def get_token(session_id: str):
 @router.delete("/token/{session_id}")
 async def revoke_token(session_id: str):
     """Remove the stored token for a session."""
-    _token_store.pop(session_id, None)
+    _token_store_by_session.pop(session_id, None)
     return {"status": "revoked"}
+
+
+@router.get("/me")
+async def whoami(request: Request):
+    """Return authenticated identity from JWT session cookie, if available."""
+    user_id = get_user_id_from_request(request)
+    return {"user_id": user_id}
+

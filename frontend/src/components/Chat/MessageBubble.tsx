@@ -73,7 +73,7 @@ function renderMarkdown(text: string): string {
         .replace(/_(.+?)_/g, '<em>$1</em>')
         .replace(/`([^`]+)`/g, '<code>$1</code>')
         .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_match, linkText, url) => {
-            const isActionLink = url.includes('docs.google.com') || url.includes('calendar.google.com');
+            const isActionLink = /docs\.google\.com|calendar\.google\.com|google\.com\/calendar|calendar\.app\.google/i.test(url);
             const className = isActionLink ? 'action-btn' : '';
             return `<a href="${url}" target="_blank" rel="noreferrer" class="${className}">${linkText}</a>`;
         })

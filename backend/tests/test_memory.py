@@ -23,6 +23,7 @@ async def test_memory_persistence():
             cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = [row[0] async for row in cursor]
             assert "user_preferences" in tables
+            assert "user_preference_facts" in tables
             assert "chat_threads" in tables
             
     finally:

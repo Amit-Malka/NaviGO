@@ -38,7 +38,7 @@ export default function App() {
   // Load past sessions
   const fetchSessions = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/chat/sessions`);
+      const res = await fetch(`${API}/api/chat/sessions`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setSessions(data.sessions || []);
@@ -54,7 +54,7 @@ export default function App() {
 
   const loadSession = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API}/api/chat/session/${id}/history`);
+      const res = await fetch(`${API}/api/chat/session/${id}/history`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         const loaded = data.history.map((msg: any) => ({
@@ -74,7 +74,7 @@ export default function App() {
   const deleteSession = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation(); // Don't trigger loadSession
     try {
-      await fetch(`${API}/api/chat/session/${id}`, { method: 'DELETE' });
+      await fetch(`${API}/api/chat/session/${id}`, { method: 'DELETE', credentials: 'include' });
       setSessions(prev => prev.filter(s => s.id !== id));
       // If we deleted the active session, start a new one
       if (id === sessionId) {

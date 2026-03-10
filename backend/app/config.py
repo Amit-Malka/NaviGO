@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     google_client_id: str
     google_client_secret: str
     google_redirect_uri: str = "http://localhost:8001/api/auth/callback"
+    google_places_api_key: str | None = None
 
     # Amadeus
     amadeus_client_id: str
@@ -26,6 +27,9 @@ class Settings(BaseSettings):
     # App
     frontend_url: str = "http://localhost:5173"
     memory_db_path: str = "./navigo_memory.db"
+    session_jwt_secret: str = "change-me-in-production"
+    session_jwt_algorithm: str = "HS256"
+    session_jwt_ttl_hours: int = 24 * 30
 
 
 settings = Settings()
