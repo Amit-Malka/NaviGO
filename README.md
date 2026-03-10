@@ -1,9 +1,9 @@
 # NaviGO - Agentic AI Travel Assistant
 
-NaviGO is a full-stack AI travel agent built for the "Agentic Challenge" assignment.
+NaviGO is a full-stack AI travel agent.
 It uses a LangGraph-based reasoning loop, executes real external tools, retries on failures, and persists user preferences across sessions.
 
-## Assignment Criteria Coverage
+## Requirements Coverage
 
 ### Core Requirements
 
@@ -33,7 +33,6 @@ Backend (FastAPI)
          - ADSBDB Aircraft Lookup
          - Google Docs
          - Google Calendar
-         - Google Places (New)
   -> SQLite (chat threads, preference facts, LangGraph checkpoints)
 ```
 
@@ -53,6 +52,11 @@ Backend (FastAPI)
 - `search_aircraft_by_registration` (ADSBDB): aircraft details by tail number.
 - `create_trip_document` (Google Docs): generates a full itinerary document.
 - `create_calendar_event` (Google Calendar): creates an all-day trip event with reminders.
+
+## Additional External Integrations
+
+- Google Places API and Google Weather API are called internally by `create_trip_document` to enrich destination highlights and weather context.
+- These are external API integrations, but not separate LangGraph-callable tools in the current agent graph.
 
 ## Self-Correction Strategy
 
@@ -125,5 +129,5 @@ Use this order to satisfy the deliverable clearly:
 
 ## Notes
 
-- OAuth tokens are kept in in-memory stores in `auth.py` (acceptable for assignment/demo, not production).
+- OAuth tokens are kept in in-memory stores in `auth.py` (acceptable for demo, not production).
 - Session identity uses JWT cookies for anonymous and Google-authenticated users.
