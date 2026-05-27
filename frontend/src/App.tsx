@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
-import type { Message } from './types';
+import type { Message, SessionHistoryItem } from './types';
 import { API_BASE } from './config';
 import { useAgent } from './hooks/useAgent';
 import { MessageBubble } from './components/Chat/MessageBubble';
@@ -57,7 +57,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/chat/session/${id}/history`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
-        const loaded = data.history.map((msg: any) => ({
+        const loaded = data.history.map((msg: SessionHistoryItem) => ({
           id: crypto.randomUUID(),
           role: msg.role,
           content: msg.content,
