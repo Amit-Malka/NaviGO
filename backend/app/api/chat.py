@@ -1,10 +1,11 @@
 """FastAPI SSE chat endpoint."""
 import json
 import logging
+import traceback
 import uuid
 
 import aiosqlite
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
@@ -182,8 +183,6 @@ async def chat_stream(req: ChatRequest, request: Request):
                 ),
             }
         except Exception as e:
-            import traceback
-
             tb = traceback.format_exc()
             logger.error("Stream error: %s", tb)
             yield {
@@ -218,16 +217,12 @@ async def get_sessions(request: Request):
                 set_session_cookie(response, issued_session_cookie)
             return response
     except Exception as e:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/session/{session_id}/history")
 async def get_history(session_id: str, request: Request):
     """Retrieve chat history for a user-owned session."""
-    from fastapi import HTTPException
-
     user_id, issued_session_cookie = resolve_or_create_user_session(request)
     if not await _user_owns_session(session_id, user_id):
         raise HTTPException(status_code=404, detail="Session not found")
@@ -254,8 +249,6 @@ async def get_history(session_id: str, request: Request):
 @router.delete("/session/{session_id}")
 async def delete_session(session_id: str, request: Request):
     """Delete a user-owned chat session and its checkpointed state."""
-    from fastapi import HTTPException
-
     user_id, issued_session_cookie = resolve_or_create_user_session(request)
     try:
         async with aiosqlite.connect(DB_PATH) as db:
@@ -280,7 +273,5 @@ async def delete_session(session_id: str, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-
         logger.error("Failed to delete session %s: %s\n%s", session_id, e, traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))

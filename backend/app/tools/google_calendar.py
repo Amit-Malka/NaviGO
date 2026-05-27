@@ -1,5 +1,5 @@
 """Google Calendar Tool — creates a calendar event for the trip."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -88,7 +88,6 @@ def create_calendar_event(
         # If no return date (one-way trip), make the event 1 day long
         end_date = return_date
         try:
-            from datetime import datetime, timedelta
             if end_date:
                 # Multi-day trip: Google Calendar API requires the all-day end date
                 # to be exclusive (the day *after* the trip ends).
