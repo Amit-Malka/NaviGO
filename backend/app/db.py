@@ -1,7 +1,8 @@
 import aiosqlite
-import os
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "navigo.db")
+from app.config import settings
+
+DB_PATH = settings.memory_db_path
 
 async def init_db():
     """Initialize the database schema for user preferences and chat history."""
@@ -41,8 +42,3 @@ async def init_db():
         """)
         await db.commit()
 
-async def get_db_connection():
-    """Yield a fresh async connection to the sqlite database."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        yield db
