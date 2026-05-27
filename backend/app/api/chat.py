@@ -14,21 +14,13 @@ from sse_starlette.sse import EventSourceResponse
 from app.agent.graph import get_graph_with_memory
 from app.db import DB_PATH
 from app.session_auth import resolve_or_create_user_session, set_session_cookie
+from app.token_registry import get_token_for_session, get_token_for_user, set_token_for_session, delete_token_for_session
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
 # Module-level graph: shared across requests, MemorySaver persists state per thread_id.
 _graph = None
-
-# Server-side token store: session_id -> google_token dict.
-# This bypasses LangGraph's config pipeline which strips unknown configurable keys.
-_google_token_store: dict[str, dict] = {}
-
-
-def get_google_token_for_session(session_id: str) -> dict | None:
-    """Called by tool_node to retrieve the google_token for the current session."""
-    return _google_token_store.get(session_id)
 
 
 def _get_graph():
@@ -83,13 +75,9 @@ async def chat_stream(req: ChatRequest, request: Request):
     # Store google_token server-side keyed by session_id.
     # LangGraph's AsyncSqliteSaver strips non-checkpoint keys from configurable,
     # so we cannot rely on passing it through config["configurable"].
-    effective_google_token = req.google_token
-    if not effective_google_token:
-        from app.api.auth import get_token_for_session, get_token_for_user
-
-        effective_google_token = get_token_for_session(session_id) or get_token_for_user(user_id)
+    effective_google_token = req.google_token or get_token_for_session(session_id) or get_token_for_user(user_id)
     if effective_google_token:
-        _google_token_store[session_id] = effective_google_token
+        set_token_for_session(session_id, effective_google_token)
 
     config = {
         "configurable": {
@@ -265,7 +253,7 @@ async def delete_session(session_id: str, request: Request):
             await db.execute("DELETE FROM writes WHERE thread_id = ?", (session_id,))
             await db.commit()
 
-        _google_token_store.pop(session_id, None)
+        delete_token_for_session(session_id)
         response = JSONResponse(content={"status": "deleted", "session_id": session_id})
         if issued_session_cookie:
             set_session_cookie(response, issued_session_cookie)

@@ -12,6 +12,13 @@ from google_auth_oauthlib.flow import Flow
 
 from app.config import settings
 from app.session_auth import create_session_token, get_user_id_from_request, set_session_cookie
+from app.token_registry import (
+    delete_token_for_session,
+    get_token_for_session,
+    get_token_for_user,
+    set_token_for_session,
+    set_token_for_user,
+)
 
 # Relax scope validation: Google may return a superset of requested scopes.
 os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
@@ -26,20 +33,6 @@ SCOPES = [
     "openid",
     "email",
 ]
-
-# In-memory token stores (production should use Redis/DB).
-_token_store_by_session: dict[str, dict] = {}
-_token_store_by_user: dict[str, dict] = {}
-
-
-def get_token_for_session(session_id: str) -> dict | None:
-    """Return token for a session if present."""
-    return _token_store_by_session.get(session_id)
-
-
-def get_token_for_user(user_id: str) -> dict | None:
-    """Return token for a signed-in user if present."""
-    return _token_store_by_user.get(user_id)
 
 
 def _make_flow() -> Flow:
@@ -77,7 +70,7 @@ async def google_callback(code: str, state: str):
     try:
         flow.fetch_token(code=code)
         credentials = flow.credentials
-        previous_token = _token_store_by_session.get(state, {})
+        previous_token = get_token_for_session(state) or {}
         token_data = {
             "access_token": credentials.token,
             "refresh_token": credentials.refresh_token or previous_token.get("refresh_token"),
@@ -87,7 +80,7 @@ async def google_callback(code: str, state: str):
             "scopes": credentials.scopes or SCOPES,
             "expiry": credentials.expiry.isoformat() if credentials.expiry else None,
         }
-        _token_store_by_session[state] = token_data
+        set_token_for_session(state, token_data)
 
         google_sub: str | None = None
         email: str | None = None
@@ -107,7 +100,7 @@ async def google_callback(code: str, state: str):
         session_cookie: str | None = None
         if google_sub:
             user_id = f"google:{google_sub}"
-            _token_store_by_user[user_id] = token_data
+            set_token_for_user(user_id, token_data)
             session_cookie = create_session_token(user_id=user_id, provider="google", email=email)
 
         payload = json.dumps({"type": "navigo-auth-success", "token": token_data, "user_id": user_id})
@@ -137,7 +130,7 @@ async def google_callback(code: str, state: str):
 @router.get("/token/{session_id}")
 async def get_token(session_id: str):
     """Frontend polls this to retrieve the stored token after OAuth callback."""
-    token = _token_store_by_session.get(session_id)
+    token = get_token_for_session(session_id)
     if not token:
         return {"status": "pending", "token": None}
     return {"token": token}
@@ -146,7 +139,7 @@ async def get_token(session_id: str):
 @router.delete("/token/{session_id}")
 async def revoke_token(session_id: str):
     """Remove the stored token for a session."""
-    _token_store_by_session.pop(session_id, None)
+    delete_token_for_session(session_id)
     return {"status": "revoked"}
 
 

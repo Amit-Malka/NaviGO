@@ -10,6 +10,7 @@ import aiosqlite
 from langchain_core.runnables.config import RunnableConfig
 from app.config import settings
 from app.db import DB_PATH
+from app.token_registry import get_token_for_session
 from app.agent.state import AgentState
 from app.agent.prompts import REACT_SYSTEM_PROMPT
 from app.tools.amadeus_flights import search_flights, search_airport_by_city
@@ -244,12 +245,11 @@ async def tool_node(state: AgentState, config: RunnableConfig) -> dict:
     if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
         return {}
 
-    # Get google_token from the server-side store (keyed by session_id).
+    # Get google_token from the registry (keyed by session_id).
     # We cannot use config["configurable"]["google_token"] because LangGraph's
     # AsyncSqliteSaver strips non-checkpoint keys from configurable internally.
-    from app.api.chat import get_google_token_for_session
     session_id = state.get("session_id", "")
-    google_token = get_google_token_for_session(session_id)
+    google_token = get_token_for_session(session_id)
 
     tool_map = {t.name: t for t in ALL_TOOLS}
     results = []
