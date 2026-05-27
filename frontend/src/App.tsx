@@ -47,9 +47,10 @@ export default function App() {
     }
   }, []);
 
+  // Fetch sessions once on mount
   useEffect(() => {
     fetchSessions();
-  }, [messages, fetchSessions]);
+  }, [fetchSessions]);
 
   const loadSession = useCallback(async (id: string) => {
     try {
@@ -107,7 +108,8 @@ export default function App() {
     await sendMessage(text);
     setIsLoading(false);
     setIsStreaming(false);
-  }, [sendMessage]);
+    fetchSessions();
+  }, [sendMessage, fetchSessions]);
 
   // Last assistant message text — drives dynamic suggestion chips
   const lastAssistantMessage = useMemo(() => {
