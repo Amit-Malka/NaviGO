@@ -2,6 +2,7 @@
 import json
 import logging
 import re
+import traceback
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_groq import ChatGroq
 from pydantic import BaseModel
@@ -272,7 +273,6 @@ async def tool_node(state: AgentState, config: RunnableConfig) -> dict:
                     result = tool_fn.invoke(tool_args, config=run_config)
 
             except Exception as e:
-                import traceback
                 logger.error("Tool %s failed: %s\n%s", tool_name, e, traceback.format_exc())
                 result = {"error": f"Tool execution failed: {str(e)}"}
 
@@ -397,7 +397,6 @@ async def extract_preferences_node(state: AgentState) -> dict:
             await db.commit()
             
     except Exception as e:
-        import traceback
         logger.error("Failed to extract preferences: %s\n%s", e, traceback.format_exc())
         
     return {}

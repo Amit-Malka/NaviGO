@@ -1,11 +1,20 @@
 """Google OAuth2 endpoints."""
+import json
 import logging
+import os
+import traceback
 
 from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
+from google.auth.transport.requests import Request as GoogleRequest
+from google.oauth2 import id_token as google_id_token
 from google_auth_oauthlib.flow import Flow
 
 from app.config import settings
 from app.session_auth import create_session_token, get_user_id_from_request, set_session_cookie
+
+# Relax scope validation: Google may return a superset of requested scopes.
+os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
@@ -64,17 +73,6 @@ async def google_auth(session_id: str):
 @router.get("/callback")
 async def google_callback(code: str, state: str):
     """Handle OAuth callback, persist token, and set JWT identity cookie."""
-    from fastapi.responses import HTMLResponse
-    from google.auth.transport.requests import Request as GoogleRequest
-    from google.oauth2 import id_token as google_id_token
-    import json as _json
-    import os
-    import traceback
-
-    # google-auth-oauthlib raises ScopeChanged when Google returns a superset
-    # of the requested scopes (e.g. drive instead of drive.file). Relax this.
-    os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
-
     flow = _make_flow()
     try:
         flow.fetch_token(code=code)
@@ -112,10 +110,10 @@ async def google_callback(code: str, state: str):
             _token_store_by_user[user_id] = token_data
             session_cookie = create_session_token(user_id=user_id, provider="google", email=email)
 
-        payload = _json.dumps({"type": "navigo-auth-success", "token": token_data, "user_id": user_id})
+        payload = json.dumps({"type": "navigo-auth-success", "token": token_data, "user_id": user_id})
         html = f"""<!DOCTYPE html><html><body><script>
   try {{
-    window.opener.postMessage({payload}, {_json.dumps(settings.frontend_url)});
+    window.opener.postMessage({payload}, {json.dumps(settings.frontend_url)});
   }} catch(e) {{}}
   window.close();
 </script><p>Authentication successful. You can close this window.</p></body></html>"""
@@ -129,7 +127,7 @@ async def google_callback(code: str, state: str):
         logger.error("OAuth callback error: %s", tb)
         error_html = f"""<!DOCTYPE html><html><body><script>
   try {{
-    window.opener.postMessage({{type:'navigo-auth-error', message:{_json.dumps(str(e))}}}, {_json.dumps(settings.frontend_url)});
+    window.opener.postMessage({{type:'navigo-auth-error', message:{json.dumps(str(e))}}}, {json.dumps(settings.frontend_url)});
   }} catch(e) {{}}
   window.close();
 </script><p>Authentication failed: {e}</p></body></html>"""

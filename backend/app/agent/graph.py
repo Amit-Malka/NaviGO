@@ -1,4 +1,6 @@
 """LangGraph StateGraph — the full ReAct agent wiring."""
+import aiosqlite
+
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from app.db import DB_PATH
@@ -61,7 +63,6 @@ _saver = None
 
 async def init_checkpointer():
     global _db_conn, _saver
-    import aiosqlite
     _db_conn = await aiosqlite.connect(DB_PATH)
     _saver = AsyncSqliteSaver(_db_conn)
     await _saver.setup()
