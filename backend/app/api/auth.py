@@ -1,4 +1,6 @@
 """Google OAuth2 endpoints."""
+import logging
+
 from fastapi import APIRouter, Request
 from google_auth_oauthlib.flow import Flow
 
@@ -6,6 +8,7 @@ from app.config import settings
 from app.session_auth import create_session_token, get_user_id_from_request, set_session_cookie
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 SCOPES = [
     "https://www.googleapis.com/auth/documents",
@@ -100,7 +103,7 @@ async def google_callback(code: str, state: str):
                 google_sub = id_info.get("sub")
                 email = id_info.get("email")
         except Exception as id_err:
-            print(f"[OAuth callback] id_token verification failed: {id_err}")
+            logger.warning("id_token verification failed: %s", id_err)
 
         user_id: str | None = None
         session_cookie: str | None = None
@@ -112,7 +115,7 @@ async def google_callback(code: str, state: str):
         payload = _json.dumps({"type": "navigo-auth-success", "token": token_data, "user_id": user_id})
         html = f"""<!DOCTYPE html><html><body><script>
   try {{
-    window.opener.postMessage({payload}, '*');
+    window.opener.postMessage({payload}, {_json.dumps(settings.frontend_url)});
   }} catch(e) {{}}
   window.close();
 </script><p>Authentication successful. You can close this window.</p></body></html>"""
@@ -123,13 +126,13 @@ async def google_callback(code: str, state: str):
 
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[OAuth callback error]\n{tb}")
+        logger.error("OAuth callback error: %s", tb)
         error_html = f"""<!DOCTYPE html><html><body><script>
   try {{
-    window.opener.postMessage({{type:'navigo-auth-error', message:{_json.dumps(str(e))}}}, '*');
+    window.opener.postMessage({{type:'navigo-auth-error', message:{_json.dumps(str(e))}}}, {_json.dumps(settings.frontend_url)});
   }} catch(e) {{}}
   window.close();
-</script><p>Authentication failed: {e}</p><pre style="font-size:11px">{tb}</pre></body></html>"""
+</script><p>Authentication failed: {e}</p></body></html>"""
         return HTMLResponse(content=error_html, status_code=400)
 
 
