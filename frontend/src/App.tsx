@@ -1,12 +1,11 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 import type { Message } from './types';
+import { API_BASE } from './config';
 import { useAgent } from './hooks/useAgent';
 import { MessageBubble } from './components/Chat/MessageBubble';
 import { ChatInput } from './components/Chat/ChatInput';
 import { GoogleAuthButton } from './components/Auth/GoogleAuthButton';
-
-const API = 'http://localhost:8001';
 
 const WELCOME: Message = {
   id: 'welcome',
@@ -38,7 +37,7 @@ export default function App() {
   // Load past sessions
   const fetchSessions = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/chat/sessions`, { credentials: 'include' });
+      const res = await fetch(`${API_BASE}/api/chat/sessions`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setSessions(data.sessions || []);
@@ -54,7 +53,7 @@ export default function App() {
 
   const loadSession = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API}/api/chat/session/${id}/history`, { credentials: 'include' });
+      const res = await fetch(`${API_BASE}/api/chat/session/${id}/history`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         const loaded = data.history.map((msg: any) => ({
@@ -74,7 +73,7 @@ export default function App() {
   const deleteSession = useCallback(async (e: React.MouseEvent, id: string) => {
     e.stopPropagation(); // Don't trigger loadSession
     try {
-      await fetch(`${API}/api/chat/session/${id}`, { method: 'DELETE', credentials: 'include' });
+      await fetch(`${API_BASE}/api/chat/session/${id}`, { method: 'DELETE', credentials: 'include' });
       setSessions(prev => prev.filter(s => s.id !== id));
       // If we deleted the active session, start a new one
       if (id === sessionId) {
