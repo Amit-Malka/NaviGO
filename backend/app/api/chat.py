@@ -1,5 +1,6 @@
 """FastAPI SSE chat endpoint."""
 import json
+import logging
 import uuid
 
 import aiosqlite
@@ -14,6 +15,7 @@ from app.db import DB_PATH
 from app.session_auth import resolve_or_create_user_session, set_session_cookie
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 # Module-level graph: shared across requests, MemorySaver persists state per thread_id.
 _graph = None
@@ -94,10 +96,6 @@ async def chat_stream(req: ChatRequest, request: Request):
         },
         "recursion_limit": 20,
     }
-    has_token = bool(effective_google_token and effective_google_token.get("access_token"))
-    stored = bool(_google_token_store.get(session_id))
-    print(f"[DEBUG chat.py] session={session_id[:8]} token_in_request={has_token} token_in_store={stored}")
-
     initial_state = {
         "messages": [HumanMessage(content=req.message)],
         "trip_info": {},
@@ -187,7 +185,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             import traceback
 
             tb = traceback.format_exc()
-            print("STREAM ERROR:", tb)
+            logger.error("Stream error: %s", tb)
             yield {
                 "event": "error",
                 "data": json.dumps({"message": f"{str(e)}\n{tb}"}),
@@ -284,5 +282,5 @@ async def delete_session(session_id: str, request: Request):
     except Exception as e:
         import traceback
 
-        traceback.print_exc()
+        logger.error("Failed to delete session %s: %s\n%s", session_id, e, traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
