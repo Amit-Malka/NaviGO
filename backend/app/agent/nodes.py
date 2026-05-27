@@ -1,5 +1,6 @@
 """LangGraph ReAct agent nodes."""
 import json
+import logging
 import re
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_groq import ChatGroq
@@ -42,7 +43,7 @@ async def invoke_with_fallback(llm_with_tools, messages: list) -> any:
         is_fn_error = "failed to call a function" in err_str or "400" in err_str
 
         if (is_rate_limit or is_fn_error) and settings.groq_api_key_2:
-            print(f"[LLM Fallback] Key 1 failed ({type(e).__name__}), retrying with key 2...")
+            logger.warning("LLM key 1 failed (%s), retrying with key 2.", type(e).__name__)
             # Rebuild the chain with the second key
             llm2 = _make_llm(settings.groq_api_key_2)
             # Re-apply the same tools + tool_choice that were bound to the original chain
@@ -60,6 +61,7 @@ ALL_TOOLS = [
 ]
 
 MAX_RETRIES = 2
+logger = logging.getLogger(__name__)
 
 def _build_preference_fact(
     key: str,
@@ -201,7 +203,7 @@ async def agent_node(state: AgentState) -> dict:
     try:
         preferences, preference_facts = await _load_preference_context(user_id)
     except Exception as e:
-        print(f"Error fetching preferences: {e}")
+        logger.warning("Failed to load preference context: %s", e)
 
     context = ""
     if state.get("trip_info"):
@@ -247,8 +249,6 @@ async def tool_node(state: AgentState, config: RunnableConfig) -> dict:
     from app.api.chat import get_google_token_for_session
     session_id = state.get("session_id", "")
     google_token = get_google_token_for_session(session_id)
-    # DEBUG — remove once confirmed working
-    print(f"[DEBUG tool_node] session={session_id[:8] if session_id else '?'} google_token_present={bool(google_token)}")
 
     tool_map = {t.name: t for t in ALL_TOOLS}
     results = []
@@ -273,10 +273,9 @@ async def tool_node(state: AgentState, config: RunnableConfig) -> dict:
 
             except Exception as e:
                 import traceback
-                traceback.print_exc()
+                logger.error("Tool %s failed: %s\n%s", tool_name, e, traceback.format_exc())
                 result = {"error": f"Tool execution failed: {str(e)}"}
 
-        print(f"Tool {tool_name} returned: {result}")
         results.append({"tool": tool_name, **result})
         tool_messages.append(ToolMessage(
             content=json.dumps(result) if isinstance(result, dict) else str(result),
@@ -399,8 +398,7 @@ async def extract_preferences_node(state: AgentState) -> dict:
             
     except Exception as e:
         import traceback
-        traceback.print_exc()
-        print(f"Error extracting preferences: {e}")
+        logger.error("Failed to extract preferences: %s\n%s", e, traceback.format_exc())
         
     return {}
 
