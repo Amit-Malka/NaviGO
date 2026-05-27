@@ -33,3 +33,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if settings.session_jwt_secret == "change-me-in-production":
+    raise RuntimeError(
+        "SESSION_JWT_SECRET is not set. "
+        "Add a secure random value to your .env file before starting the server."
+    )
