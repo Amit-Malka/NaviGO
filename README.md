@@ -118,15 +118,17 @@ Required:
 - `GOOGLE_CLIENT_SECRET`
 - `AMADEUS_CLIENT_ID`
 - `AMADEUS_CLIENT_SECRET`
+- `SESSION_JWT_SECRET` (server refuses to start if left as default)
 
 Optional:
 - `GROQ_API_KEY_2` (fallback key for rate-limit/function-call recovery)
-- `GROQ_MODEL` (default in code: `qwen/qwen3-32b`)
+- `GROQ_MODEL` (default: `qwen/qwen3-32b`)
 - `GOOGLE_PLACES_API_KEY` (destination highlights/weather in Docs generation)
+- `MEMORY_DB_PATH` (SQLite file path, default: `./navigo_memory.db`)
 
 ## Notes
 
-- OAuth tokens are kept in in-memory stores in `auth.py` (acceptable for demo, not production).
+- OAuth tokens are kept in in-memory stores in `token_registry.py` (acceptable for demo, not production).
 - Session identity uses JWT cookies for anonymous and Google-authenticated users.
   
 ---
