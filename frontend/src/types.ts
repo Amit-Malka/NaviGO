@@ -25,6 +25,12 @@ export type SsePayload =
 // Chat message types
 export type Role = 'user' | 'assistant';
 
+// Shape of a single message entry returned by GET /session/{id}/history
+export interface SessionHistoryItem {
+  role: Role;
+  content: string;
+}
+
 export interface ToolActivity {
   tool: string;
   status: 'running' | 'success' | 'error';
