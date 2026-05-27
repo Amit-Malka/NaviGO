@@ -1,12 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import './GoogleAuthButton.css';
+import { API_BASE } from '../../config';
 
 interface Props {
     sessionId: string | null;
     onTokenReceived: (token: Record<string, string>) => void;
 }
-
-const API_BASE = 'http://localhost:8001';
 
 export function GoogleAuthButton({ sessionId, onTokenReceived }: Props) {
     const [status, setStatus] = useState<'idle' | 'pending' | 'success'>('idle');

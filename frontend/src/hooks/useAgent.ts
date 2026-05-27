@@ -1,7 +1,6 @@
 import { useCallback, useRef } from 'react';
 import type { Message, ToolActivity, TokenEvent, ToolStartEvent, ToolEndEvent, SelfCorrectionEvent, DoneEvent } from '../types';
-
-const API_BASE = 'http://localhost:8001';
+import { API_BASE } from '../config';
 
 interface UseAgentOptions {
     onMessageUpdate: (updater: (msgs: Message[]) => Message[]) => void;
